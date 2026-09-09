@@ -277,7 +277,7 @@ emit_data_assoc_expr :: proc(e: ^Emitter, form: CST_Form, target_text: string) -
     ok_value := false
     #partial switch form.items[3].kind {
     case .Nil, .Bool, .Number, .String, .Keyword, .Vector, .Brace, .Set:
-        value_text, err_value, ok_value = emit_data_value_literal(e, form.items[3])
+        value_text, err_value, ok_value = emit_static_data_value_expr(e, form.items[3])
     case:
         value_text, value_owned, err_value, ok_value = runtime_data_unquote_expr(e, form.items[3])
     }

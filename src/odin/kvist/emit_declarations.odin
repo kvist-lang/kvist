@@ -1445,8 +1445,40 @@ emit_data_type_helper :: proc(e: ^Emitter) {
 }
 
 emit_data_literals :: proc(e: ^Emitter, literals: []Data_Literal) {
+    emit_line(e, "// kvist: bounded-static-data-initializers")
     for literal in literals {
         emit_raw_newline(e)
+        if literal.backing_type != "" {
+            // Slice literals inside a procedure would point at its stack. Keep
+            // backing arrays global, but move their stores out of Odin's single
+            // startup function: LLVM's ARM64 Localizer is quadratic there.
+            // Bound flat literals too, and prevent optimized builds from
+            // inlining the stores back into startup.
+            emit_line(e, fmt.tprintf("%s: [%d]%s", literal.name, literal.backing_count, literal.backing_type))
+            chunk_size :: 64
+            if literal.backing_count > chunk_size {
+                lines := strings.split_lines(literal.value, context.allocator)
+                defer delete(lines)
+                for start := 0; start < literal.backing_count; start += chunk_size {
+                    emit_line(e, fmt.tprintf("%s_init_%d :: #force_no_inline proc \"contextless\"() {{", literal.name, start))
+                    for index in start..<min(start+chunk_size, literal.backing_count) {
+                        emit_line(e, lines[index])
+                    }
+                    emit_line(e, "}")
+                }
+            }
+            emit_line(e, fmt.tprintf("%s_init :: #force_no_inline proc \"contextless\"() -> []%s {{", literal.name, literal.backing_type))
+            if literal.backing_count > chunk_size {
+                for start := 0; start < literal.backing_count; start += chunk_size {
+                    emit_line(e, fmt.tprintf("    %s_init_%d()", literal.name, start))
+                }
+            } else {
+                emit_line(e, literal.value)
+            }
+            emit_line(e, fmt.tprintf("    return %s[:]", literal.name))
+            emit_line(e, "}")
+            continue
+        }
         emit_line(e, fmt.tprintf("%s: Data = %s", literal.name, literal.value))
     }
 }

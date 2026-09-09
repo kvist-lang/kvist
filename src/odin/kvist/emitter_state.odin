@@ -106,6 +106,8 @@ Emitter_Features :: struct {
 Data_Literal :: struct {
     name:  string,
     value: string,
+    backing_type: string,
+    backing_count: int,
 }
 
 Emitter_Import_Cache :: struct {
@@ -201,6 +203,7 @@ Emitter :: struct {
     line:                      int,
     temp_counter:              int,
     data_literal_prefix:       string,
+    data_backing_counter:      int,
     owner_counter:             int,
     attach_next_decl:          bool,
     pending_prefix_directives: [dynamic]string,

@@ -128,7 +128,25 @@ parse_user_macro_decl :: proc(top: CST_Top_Form) -> (macro_decl: User_Macro, err
     }, Compile_Error{}, true
 }
 
+// Borrowed, expansion-scoped index. Never retain macro names or definitions
+// across compilations/REPL generations. A nested expansion restores its parent.
+Macro_Lookup_Index :: struct {
+    macros: []User_Macro,
+    positions: map[string]int,
+}
+
+@(thread_local)
+active_macro_lookup_index: ^Macro_Lookup_Index
+
 find_user_macro :: proc(macros: []User_Macro, name: string) -> (User_Macro, bool) {
+    index := active_macro_lookup_index
+    if index != nil && len(index.macros) == len(macros) &&
+       raw_data(index.macros) == raw_data(macros) {
+        if position, found := index.positions[name]; found {
+            return macros[position], true
+        }
+        return User_Macro{}, false
+    }
     for i := len(macros) - 1; i >= 0; i -= 1 {
         if macros[i].name == name {
             return macros[i], true

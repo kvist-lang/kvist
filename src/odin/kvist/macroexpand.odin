@@ -855,6 +855,16 @@ macroexpand_top_forms :: proc(forms: []CST_Top_Form, include_core_macros: bool =
             append(&macros, macro_decl)
         }
     }
+    lookup := Macro_Lookup_Index{macros = macros[:], positions = make(map[string]int)}
+    for macro_decl, position in macros {
+        lookup.positions[macro_decl.name] = position
+    }
+    previous_lookup := active_macro_lookup_index
+    active_macro_lookup_index = &lookup
+    defer {
+        active_macro_lookup_index = previous_lookup
+        delete(lookup.positions)
+    }
     for top in forms {
         if is_defmacro_form(top.form) {
             continue
@@ -882,6 +892,10 @@ macroexpand_top_forms :: proc(forms: []CST_Top_Form, include_core_macros: bool =
                     return expanded, macros, err_macro, false
                 }
                 append(&macros, macro_decl)
+                // append may move the macro buffer; generated definitions also
+                // shadow earlier names just like the original reverse scan.
+                lookup.macros = macros[:]
+                lookup.positions[macro_decl.name] = len(macros)-1
                 delete_cst_form(rewritten)
                 continue
             }

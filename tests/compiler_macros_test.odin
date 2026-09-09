@@ -144,6 +144,8 @@ compile_macro_generated_data_literals_have_unique_names :: proc(t: ^testing.T) {
 
     testing.expect_value(t, count_substring(output, "kvist_data_literal_1: Data"), 1)
     testing.expect_value(t, count_substring(output, "kvist_data_literal_2: Data"), 1)
+    testing.expect_value(t, count_substring(output, "kvist_data_backing_1: [2]Data"), 1)
+    testing.expect_value(t, count_substring(output, "kvist_data_backing_2: [2]Data"), 1)
 }
 
 @(test)

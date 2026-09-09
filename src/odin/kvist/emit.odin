@@ -288,7 +288,7 @@ emit_call_like :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_Error, b
             }
             call := emit_call_text("kvist_data_get", []string{target, key})
             if len(form.items) == 4 {
-                fallback, err_fallback, ok_fallback := emit_data_value_literal(e, form.items[3])
+                fallback, err_fallback, ok_fallback := emit_static_data_value_expr(e, form.items[3])
                 if form.items[3].kind == .Symbol ||
                    (form.items[3].kind == .List && len(form.items[3].items) > 0 && is_symbol(form.items[3].items[0], "quote")) {
                     fallback, err_fallback, ok_fallback = emit_expr(e, form.items[3])

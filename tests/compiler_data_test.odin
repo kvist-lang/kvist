@@ -45,6 +45,72 @@ data_present_lookups_are_released :: proc(output: string) -> bool {
 }
 
 @(test)
+quoted_collections_have_permanent_out_of_line_backing :: proc(t: ^testing.T) {
+    source := `(package main)
+(def config '{:nested [1 (two true) #{:three}] :empty []})
+(defn quoted [] -> Data '[[42] {}])`
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+    testing.expect_value(t, strings.contains(output, "#force_no_inline proc \"contextless\"() -> []Data"), true)
+    testing.expect_value(t, strings.contains(output, "#force_no_inline proc \"contextless\"() -> []Data_Entry"), true)
+    testing.expect_value(t, strings.contains(output, ": [0]Data"), true)
+    testing.expect_value(t, strings.contains(output, "payload = {items = []Data{"), false)
+    testing.expect_value(t, strings.contains(output, "payload = {entries = []Data_Entry{"), false)
+    testing.expect_value(t, strings.contains(output, "%!("), false)
+}
+
+@(test)
+quoted_flat_collection_initializers_are_bounded :: proc(t: ^testing.T) {
+    builder := strings.builder_make()
+    defer strings.builder_destroy(&builder)
+    strings.write_string(&builder, "(package main)\n(def flat '[")
+    for index in 0..<129 {
+        fmt.sbprintf(&builder, "%d ", index)
+    }
+    strings.write_string(&builder, "])\n")
+    output, err, ok := kvist.compile_source(strings.to_string(builder))
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+    testing.expect_value(t, count_substring(output, "_init_0 :: #force_no_inline"), 1)
+    testing.expect_value(t, count_substring(output, "_init_64 :: #force_no_inline"), 1)
+    testing.expect_value(t, count_substring(output, "_init_128 :: #force_no_inline"), 1)
+    testing.expect_value(t, strings.contains(output, "    kvist_data_backing_1_init_128()"), true)
+}
+
+@(test)
+runtime_static_data_sites_do_not_repeat_initialization :: proc(t: ^testing.T) {
+    source := `(package main)
+(defn fallback [] -> Data (get '{} :missing '[42]))
+(defn quasi [value: int] -> Data (quasiquote [[42] (unquote value)]))`
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+    names := []string{"fallback", "quasi"}
+    for name in names {
+        start := strings.index(output, fmt.tprintf("%s :: proc", name))
+        testing.expect(t, start >= 0)
+        if start < 0 { continue }
+        end := strings.index(output[start:], "\n}")
+        testing.expect(t, end >= 0)
+        if end < 0 { continue }
+        testing.expect_value(t, strings.contains(output[start:start+end], "_init("), false)
+    }
+}
+
+@(test)
 compile_defstruct_rejects_bad_metadata :: proc(t: ^testing.T) {
     source := `(package main)
 

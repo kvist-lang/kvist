@@ -1258,19 +1258,16 @@ mark_data_type :: proc(e: ^Emitter) {
 emit_data_items_literal :: proc(e: ^Emitter, items: []CST_Form) -> (string, Compile_Error, bool) {
     builder := strings.builder_make()
     defer strings.builder_destroy(&builder)
-    strings.write_string(&builder, "[]Data{")
+    name := next_data_literal_name(e, true)
     for item, idx in items {
-        if idx > 0 {
-            strings.write_string(&builder, ", ")
-        }
         value, err_value, ok_value := emit_data_value_literal(e, item)
         if !ok_value {
             return "", err_value, false
         }
-        strings.write_string(&builder, value)
+        fmt.sbprintf(&builder, "    %s[%d] = %s\n", name, idx, value)
     }
-    strings.write_byte(&builder, '}')
-    return strings.clone(strings.to_string(builder)), Compile_Error{}, true
+    append(&e.features.data_literals, Data_Literal{name = name, value = strings.clone(strings.to_string(builder)), backing_type = "Data", backing_count = len(items)})
+    return fmt.tprintf("%s_init()", name), Compile_Error{}, true
 }
 
 emit_data_map_literal :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_Error, bool) {
@@ -1279,12 +1276,9 @@ emit_data_map_literal :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_E
     }
     builder := strings.builder_make()
     defer strings.builder_destroy(&builder)
-    strings.write_string(&builder, "Data{kind = .Map, payload = {entries = []Data_Entry{")
+    name := next_data_literal_name(e, true)
     i := 0
     for i < len(form.items) {
-        if i > 0 {
-            strings.write_string(&builder, ", ")
-        }
         key, err_key, ok_key := emit_data_value_literal(e, form.items[i])
         if !ok_key {
             return "", err_key, false
@@ -1293,11 +1287,11 @@ emit_data_map_literal :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_E
         if !ok_value {
             return "", err_value, false
         }
-        fmt.sbprintf(&builder, "{{key = %s, value = %s}}", key, value)
+        fmt.sbprintf(&builder, "    %s[%d] = Data_Entry{{key = %s, value = %s}}\n", name, i/2, key, value)
         i += 2
     }
-    strings.write_string(&builder, "}}}")
-    return strings.clone(strings.to_string(builder)), Compile_Error{}, true
+    append(&e.features.data_literals, Data_Literal{name = name, value = strings.clone(strings.to_string(builder)), backing_type = "Data_Entry", backing_count = len(form.items)/2})
+    return fmt.tprintf("Data{{kind = .Map, payload = {{entries = %s_init()}}}}", name), Compile_Error{}, true
 }
 
 emit_data_value_literal :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_Error, bool) {
@@ -1348,16 +1342,45 @@ emit_quoted_data_expr :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_E
     if !ok_value {
         return "", err_value, false
     }
+    name := next_data_literal_name(e)
+    append(&e.features.data_literals, Data_Literal{name = name, value = value})
+    return name, Compile_Error{}, true
+}
+
+// Runtime sites (lookup defaults/keys, assoc and static quasiquote branches)
+// must only read a literal. Calling its initializer there would repeatedly
+// write shared backing arrays, including from concurrent calls.
+emit_static_data_value_expr :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_Error, bool) {
+    value, err, ok := emit_data_value_literal(e, form)
+    if !ok {
+        return "", err, false
+    }
+    if form.kind == .List || form.kind == .Vector || form.kind == .Set || form.kind == .Brace {
+        name := next_data_literal_name(e, true)
+        append(&e.features.data_literals, Data_Literal{name = name, value = value})
+        return name, {}, true
+    }
+    return value, {}, true
+}
+
+next_data_literal_name :: proc(e: ^Emitter, backing := false) -> string {
     name := ""
+    counter := &e.temp_counter
+    kind := "literal"
+    if backing {
+        counter = &e.data_backing_counter
+        kind = "backing"
+    }
     for {
-        e.temp_counter += 1
+        counter^ += 1
         if e.data_literal_prefix == "" {
-            name = fmt.tprintf("kvist_data_literal_%d", e.temp_counter)
+            name = fmt.tprintf("kvist_data_%s_%d", kind, counter^)
         } else {
             name = fmt.tprintf(
-                "kvist_data_literal_%s_%d",
+                "kvist_data_%s_%s_%d",
+                kind,
                 e.data_literal_prefix,
-                e.temp_counter,
+                counter^,
             )
         }
         available := true
@@ -1372,8 +1395,7 @@ emit_quoted_data_expr :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_E
         }
         delete(name)
     }
-    append(&e.features.data_literals, Data_Literal{name = name, value = value})
-    return name, Compile_Error{}, true
+    return name
 }
 
 form_contains_runtime_unquote :: proc(form: CST_Form, depth: int = 0) -> bool {
@@ -1496,7 +1518,7 @@ emit_runtime_data_quasiquote_value :: proc(e: ^Emitter, form: CST_Form, root: bo
         return "", false, Compile_Error{message = "runtime Data splice is valid only as an item in a quasiquoted list, vector, or set", span = form.span}, false
     }
     if !form_contains_runtime_unquote(form) {
-        value, err_value, ok_value := emit_data_value_literal(e, form)
+        value, err_value, ok_value := emit_static_data_value_expr(e, form)
         return value, false, err_value, ok_value
     }
     if form.kind != .List && form.kind != .Vector && form.kind != .Brace && form.kind != .Set {
@@ -1667,7 +1689,7 @@ emit_contextual_data_value :: proc(e: ^Emitter, form: CST_Form) -> (text: string
 
 emit_data_lookup_key :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_Error, bool) {
     if form.kind != .Symbol {
-        return emit_data_value_literal(e, form)
+        return emit_static_data_value_expr(e, form)
     }
     raw, err_raw, ok_raw := emit_expr(e, form)
     if !ok_raw {
