@@ -660,3 +660,56 @@ odin_timing_output_filter_preserves_program_output :: proc(t: ^testing.T) {
     defer delete(filtered_diagnostic)
     testing.expect_value(t, filtered_diagnostic, "generated.odin(2:3) :Error bad value\n")
 }
+
+@(test)
+repl_odin_build_retries_only_compiler_crashes :: proc(t: ^testing.T) {
+    success := os.Process_State{exited = true, exit_code = 0, success = true}
+    testing.expect_value(
+        t,
+        repl_odin_build_should_retry_single_thread(success, nil, nil, nil),
+        false,
+    )
+
+    diagnostic_failure :=
+        os.Process_State{exited = true, exit_code = 1, success = false}
+    testing.expect_value(
+        t,
+        repl_odin_build_should_retry_single_thread(
+            diagnostic_failure,
+            nil,
+            transmute([]byte)string("invalid source"),
+            nil,
+        ),
+        false,
+    )
+    testing.expect_value(
+        t,
+        repl_odin_build_should_retry_single_thread(
+            diagnostic_failure,
+            nil,
+            nil,
+            nil,
+        ),
+        true,
+    )
+
+    segfault := os.Process_State{exited = true, exit_code = 11, success = false}
+    testing.expect_value(
+        t,
+        repl_odin_build_should_retry_single_thread(
+            segfault,
+            nil,
+            transmute([]byte)string("shell signal text"),
+            nil,
+        ),
+        true,
+    )
+    failure_message :=
+        repl_odin_build_failure_message(segfault, nil, true)
+    defer delete(failure_message)
+    testing.expect_value(
+        t,
+        failure_message,
+        "Odin compiler terminated without diagnostics after single-thread retry (exit or signal code 11)",
+    )
+}

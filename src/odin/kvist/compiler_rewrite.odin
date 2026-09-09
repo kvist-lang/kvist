@@ -61,9 +61,14 @@ rewrite_symbol_text :: proc(text: string, locals: []string, aliases: []Alias_Pre
         }
     }
     for alias_map in aliases {
-        prefix_text := fmt.tprintf("%s.", alias_map.alias)
-        if len(body) > len(prefix_text) && body[:len(prefix_text)] == prefix_text {
-            member := body[len(prefix_text):]
+        // Compare the alias and separator in place: building "alias." and
+        // "alias/" for every symbol allocates even when neither can match.
+        alias_len := len(alias_map.alias)
+        if len(body) <= alias_len+1 || body[:alias_len] != alias_map.alias {
+            continue
+        }
+        if body[alias_len] == '.' {
+            member := body[alias_len+1:]
             if alias_map.preserve_qualified_calls {
                 return text, Compile_Error{}, true
             }
@@ -82,9 +87,8 @@ rewrite_symbol_text :: proc(text: string, locals: []string, aliases: []Alias_Pre
             }
             return fmt.tprintf("%s%s%s__%s", quote_prefix, operator_prefix, alias_map.prefix, member), Compile_Error{}, true
         }
-        old_prefix_text := fmt.tprintf("%s/", alias_map.alias)
-        if len(body) > len(old_prefix_text) && body[:len(old_prefix_text)] == old_prefix_text {
-            member := body[len(old_prefix_text):]
+        if body[alias_len] == '/' {
+            member := body[alias_len+1:]
             return "", Compile_Error{message = fmt.tprintf("use `%s.%s` for package access", alias_map.alias, member), span = span}, false
         }
     }

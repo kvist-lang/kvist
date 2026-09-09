@@ -430,7 +430,7 @@ validate_package_conflicts :: proc(files: []Package_File) -> (Compile_Error, boo
     return Compile_Error{}, true
 }
 
-load_source_forms :: proc(dir, prefix: string, loaded_keys, import_keys: ^[dynamic]string, visiting: ^[dynamic]string) -> (Loaded_Forms, Compile_Error, bool) {
+load_source_forms :: proc(dir, prefix: string, loaded_keys, import_keys: ^[dynamic]string, visiting: ^[dynamic]string, core_exports_cache: ^Core_Exports_Cache = nil) -> (Loaded_Forms, Compile_Error, bool) {
     key := fmt.tprintf("%s|%s", dir, prefix)
     if contains_text(loaded_keys[:], key) {
         return Loaded_Forms{}, Compile_Error{}, true
@@ -492,7 +492,7 @@ load_source_forms :: proc(dir, prefix: string, loaded_keys, import_keys: ^[dynam
     defer delete_string_slice(&raw_exported)
     aliases: [dynamic]Alias_Prefix
     defer alias_prefix_slice_delete(&aliases)
-    err_core_alias, ok_core_alias := append_core_bare_symbol_alias(&aliases, dir)
+    err_core_alias, ok_core_alias := append_core_bare_symbol_alias(&aliases, dir, core_exports_cache)
     if !ok_core_alias {
         return Loaded_Forms{}, err_core_alias, false
     }
@@ -542,7 +542,7 @@ load_source_forms :: proc(dir, prefix: string, loaded_keys, import_keys: ^[dynam
                 nested_prefix = fmt.tprintf("%s__%s", prefix, alias)
             }
             nested_import_keys: [dynamic]string
-            nested, err_nested, ok_nested := load_source_forms(resolved, nested_prefix, loaded_keys, &nested_import_keys, visiting)
+            nested, err_nested, ok_nested := load_source_forms(resolved, nested_prefix, loaded_keys, &nested_import_keys, visiting, core_exports_cache)
             delete_string_slice(&nested_import_keys)
             delete(resolved)
             if !ok_nested {
@@ -613,6 +613,8 @@ load_root_file_forms :: proc(
     path: string,
     extra_imports: []CST_Top_Form = nil,
 ) -> (Loaded_Forms, Compile_Error, bool) {
+    core_exports_cache := Core_Exports_Cache{}
+    defer core_exports_cache_delete(&core_exports_cache)
     files, err_files, ok_files := read_root_package_files(path)
     if !ok_files {
         return Loaded_Forms{}, err_files, false
@@ -653,7 +655,7 @@ load_root_file_forms :: proc(
     defer delete(locals)
     private_macros := collect_private_macro_decl_names(all_forms[:])
     defer delete(private_macros)
-    err_core_alias, ok_core_alias := append_core_bare_symbol_alias(&aliases, path)
+    err_core_alias, ok_core_alias := append_core_bare_symbol_alias(&aliases, path, &core_exports_cache)
     if !ok_core_alias {
         return result, err_core_alias, false
     }
@@ -669,7 +671,7 @@ load_root_file_forms :: proc(
                 return result, err_resolve, false
             }
             nested_import_keys: [dynamic]string
-            nested, err_nested, ok_nested := load_source_forms(resolved, alias, &loaded_keys, &nested_import_keys, &visiting)
+            nested, err_nested, ok_nested := load_source_forms(resolved, alias, &loaded_keys, &nested_import_keys, &visiting, &core_exports_cache)
             if !ok_nested {
                 return result, err_nested, false
             }
@@ -706,7 +708,7 @@ load_root_file_forms :: proc(
             return result, err_resolve, false
         }
         nested_import_keys: [dynamic]string
-        nested, err_nested, ok_nested := load_source_forms(resolved, alias, &loaded_keys, &nested_import_keys, &visiting)
+        nested, err_nested, ok_nested := load_source_forms(resolved, alias, &loaded_keys, &nested_import_keys, &visiting, &core_exports_cache)
         if !ok_nested {
             return result, err_nested, false
         }
@@ -779,6 +781,8 @@ load_root_file_forms :: proc(
 }
 
 load_root_source_forms :: proc(forms: []CST_Top_Form) -> (Loaded_Forms, Compile_Error, bool) {
+    core_exports_cache := Core_Exports_Cache{}
+    defer core_exports_cache_delete(&core_exports_cache)
     aliases: [dynamic]Alias_Prefix
     import_keys: [dynamic]string
     loaded_keys: [dynamic]string
@@ -788,7 +792,7 @@ load_root_source_forms :: proc(forms: []CST_Top_Form) -> (Loaded_Forms, Compile_
     defer delete(locals)
     private_macros := collect_private_macro_decl_names(forms)
     defer delete(private_macros)
-    err_core_alias, ok_core_alias := append_core_bare_symbol_alias(&aliases, ".")
+    err_core_alias, ok_core_alias := append_core_bare_symbol_alias(&aliases, ".", &core_exports_cache)
     if !ok_core_alias {
         return result, err_core_alias, false
     }
@@ -803,7 +807,7 @@ load_root_source_forms :: proc(forms: []CST_Top_Form) -> (Loaded_Forms, Compile_
             return result, err_resolve, false
         }
         nested_import_keys: [dynamic]string
-        nested, err_nested, ok_nested := load_source_forms(resolved, alias, &loaded_keys, &nested_import_keys, &visiting)
+        nested, err_nested, ok_nested := load_source_forms(resolved, alias, &loaded_keys, &nested_import_keys, &visiting, &core_exports_cache)
         if !ok_nested {
             return result, err_nested, false
         }

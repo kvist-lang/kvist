@@ -374,8 +374,13 @@ clone_cst_form :: proc(form: CST_Form) -> CST_Form {
         cloned.source_text = strings.clone(form.source_text)
     }
     cloned.items = nil
-    for item in form.items {
-        append(&cloned.items, clone_cst_form(item))
+    // The shape is already known. Avoid growth reallocations and excess
+    // capacity for the many small child arrays in a syntax tree.
+    if len(form.items) > 0 {
+        cloned.items = make([dynamic]CST_Form, len(form.items), len(form.items))
+        for item, i in form.items {
+            cloned.items[i] = clone_cst_form(item)
+        }
     }
     return cloned
 }
@@ -395,8 +400,11 @@ delete_cst_form :: proc(form: ^CST_Form) {
 }
 
 clone_cst_form_slice :: proc(forms: []CST_Form) -> (out: [dynamic]CST_Form) {
-    for form in forms {
-        append(&out, clone_cst_form(form))
+    if len(forms) > 0 {
+        out = make([dynamic]CST_Form, len(forms), len(forms))
+        for form, i in forms {
+            out[i] = clone_cst_form(form)
+        }
     }
     return out
 }

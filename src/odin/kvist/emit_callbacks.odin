@@ -632,15 +632,13 @@ parse_proc_literal_form :: proc(form: CST_Form) -> (Proc_Literal, Compile_Error,
     }, Compile_Error{}, true
 }
 
-emit_proc_literal_text :: proc(e: ^Emitter, params: []Param, returns: Return_Spec, body: []CST_Form) -> (string, Compile_Error, bool) {
-    for param in params {
-        mark_keyword_type_for_text(e, param.ty)
-    }
-    mark_keyword_type_for_return_spec(e, returns)
-    sub := Emitter{
+proc_literal_emitter :: proc(e: ^Emitter, returns: Return_Spec) -> Emitter {
+    ensure_emitter_indexes(e)
+    return Emitter{
         builder     = strings.builder_make(),
         indent      = 1,
         decls       = e.decls,
+        indexes     = e.indexes,
         structs     = e.structs,
         unions      = e.unions,
         local_structs = e.local_structs,
@@ -658,6 +656,14 @@ emit_proc_literal_text :: proc(e: ^Emitter, params: []Param, returns: Return_Spe
         repl_debug_capture_values = e.repl_debug_capture_values,
         import_cache = e.import_cache,
     }
+}
+
+emit_proc_literal_text :: proc(e: ^Emitter, params: []Param, returns: Return_Spec, body: []CST_Form) -> (string, Compile_Error, bool) {
+    for param in params {
+        mark_keyword_type_for_text(e, param.ty)
+    }
+    mark_keyword_type_for_return_spec(e, returns)
+    sub := proc_literal_emitter(e, returns)
     defer strings.builder_destroy(&sub.builder)
 
     for local in e.local_types {

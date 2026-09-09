@@ -9012,6 +9012,60 @@ repl_retarget_nested_pause_generation :: proc(
     }
 }
 
+repl_odin_build_failed :: proc(
+    state: os.Process_State,
+    process_err: os.Error,
+) -> bool {
+    return process_err != nil || !state.exited || state.exit_code != 0
+}
+
+repl_odin_build_should_retry_single_thread :: proc(
+    state: os.Process_State,
+    stdout,
+    stderr: []byte,
+    process_err: os.Error,
+) -> bool {
+    if !repl_odin_build_failed(state, process_err) ||
+       process_err != nil || !state.exited {
+        return false
+    }
+    // On POSIX Process_State reports a terminating signal in exit_code. Odin's
+    // LLVM backend can occasionally abort or segfault without producing a
+    // diagnostic. Retry those known crash codes, and any otherwise silent
+    // compiler termination, with one compiler thread.
+    return state.exit_code == 6 || state.exit_code == 11 ||
+           (len(stdout) == 0 && len(stderr) == 0)
+}
+
+repl_odin_build_failure_message :: proc(
+    state: os.Process_State,
+    process_err: os.Error,
+    single_thread_retry: bool,
+) -> string {
+    retry_text := ""
+    if single_thread_retry {
+        retry_text = " after single-thread retry"
+    }
+    if process_err != nil {
+        return fmt.aprintf(
+            "failed to run Odin compiler%s: %v",
+            retry_text,
+            process_err,
+        )
+    }
+    if state.exited {
+        return fmt.aprintf(
+            "Odin compiler terminated without diagnostics%s (exit or signal code %d)",
+            retry_text,
+            state.exit_code,
+        )
+    }
+    return fmt.aprintf(
+        "Odin compiler did not exit%s",
+        retry_text,
+    )
+}
+
 repl_compile_generation :: proc(
     input,
     source,
@@ -9729,7 +9783,7 @@ repl_compile_generation :: proc(
         context.allocator,
     )
     fast_build_compiler_failure := fast_native_build &&
-        (process_err != nil || !state.exited || state.exit_code != 0) &&
+        repl_odin_build_failed(state, process_err) &&
         (strings.contains(string(stderr), "This is a compiler error") ||
          strings.contains(string(stderr), "Assertion Failure"))
     if fast_build_compiler_failure {
@@ -9746,13 +9800,29 @@ repl_compile_generation :: proc(
             context.allocator,
         )
     }
+    single_thread_retry :=
+        repl_odin_build_should_retry_single_thread(
+            state,
+            stdout,
+            stderr,
+            process_err,
+        )
+    if single_thread_retry {
+        delete(stdout)
+        delete(stderr)
+        append(&command, "-thread-count:1")
+        state, stdout, stderr, process_err = os.process_exec(
+            os.Process_Desc{command = command[:]},
+            context.allocator,
+        )
+    }
     if timings != nil {
         timings.odin_build_ns =
             time.duration_nanoseconds(time.tick_since(odin_build_start))
     }
     defer delete(stdout)
     defer delete(stderr)
-    if process_err != nil || !state.exited || state.exit_code != 0 {
+    if repl_odin_build_failed(state, process_err) {
         combined := strings.builder_make()
         defer strings.builder_destroy(&combined)
         if len(stdout) > 0 {
@@ -9771,7 +9841,14 @@ repl_compile_generation :: proc(
             delete(mapped)
         }
         if strings.to_string(combined) == "" {
-            strings.write_string(&combined, "failed to build REPL generation")
+            failure_message :=
+                repl_odin_build_failure_message(
+                    state,
+                    process_err,
+                    single_thread_retry,
+                )
+            strings.write_string(&combined, failure_message)
+            delete(failure_message)
         }
         if diagnostics != nil {
             _, _, end_line, end_column :=

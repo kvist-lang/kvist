@@ -189,6 +189,26 @@ emitter_odin_root :: proc(e: ^Emitter) -> (string, bool) {
     return "", false
 }
 
+// Anonymous procedures use the same global declarations and imports as their
+// parent. Share the index object (not copies of mutable map headers), while
+// keeping local scopes and all other emission state on the individual emitter.
+Emitter_Indexes :: struct {
+    proc_indices: map[string]int,
+    overload_indices: map[string]int,
+    const_indices: map[string]int,
+    transform_indices: map[string]int,
+    source_indices: map[string]int,
+    enum_indices: map[string]int,
+    struct_indices: map[string]int,
+    union_indices: map[string]int,
+    decl_indices: map[string]int,
+    kvist_import_packages: map[string]string,
+    kvist_package_presence: map[string]bool,
+    odin_import_aliases: map[string]bool,
+    odin_import_paths: map[string]string,
+    odin_import_cache_keys: map[string]string,
+}
+
 Emitter :: struct {
     builder:                   strings.Builder,
     indent:                    int,
@@ -225,21 +245,7 @@ Emitter :: struct {
     current_source_path: string,
     current_source_file: string,
     warning_source_files: map[string]string,
-    indexes_ready: bool,
-    proc_indices: map[string]int,
-    overload_indices: map[string]int,
-    const_indices: map[string]int,
-    transform_indices: map[string]int,
-    source_indices: map[string]int,
-    enum_indices: map[string]int,
-    struct_indices: map[string]int,
-    union_indices: map[string]int,
-    decl_indices: map[string]int,
-    kvist_import_packages: map[string]string,
-    kvist_package_presence: map[string]bool,
-    odin_import_aliases: map[string]bool,
-    odin_import_paths: map[string]string,
-    odin_import_cache_keys: map[string]string,
+    using indexes: ^Emitter_Indexes,
     import_cache: ^Emitter_Import_Cache,
     repl_value_names: []string,
     repl_var_names: []string,
@@ -252,10 +258,10 @@ Emitter :: struct {
 }
 
 ensure_emitter_indexes :: proc(e: ^Emitter) {
-    if e.indexes_ready {
+    if e.indexes != nil {
         return
     }
-    e.indexes_ready = true
+    e.indexes = new(Emitter_Indexes, context.temp_allocator)
     e.proc_indices = make(map[string]int, context.temp_allocator)
     e.overload_indices = make(map[string]int, context.temp_allocator)
     e.const_indices = make(map[string]int, context.temp_allocator)

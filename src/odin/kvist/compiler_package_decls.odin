@@ -110,7 +110,49 @@ collect_public_decl_names :: proc(forms: []CST_Top_Form) -> (names: [dynamic]str
     return names
 }
 
-append_core_bare_symbol_alias :: proc(aliases: ^[dynamic]Alias_Prefix, anchor_path: string = ".") -> (Compile_Error, bool) {
+// Scoped to one root load, not shared across compilations or REPL reloads.
+// Keys and values are owned; callers receive independent copies of exports.
+Core_Exports_Cache :: struct {
+    entries: map[string][dynamic]string,
+}
+
+core_exports_cache_delete :: proc(cache: ^Core_Exports_Cache) {
+    for path, exports in cache.entries {
+        delete(path)
+        owned := exports
+        delete_string_slice(&owned)
+    }
+    delete(cache.entries)
+    cache^ = {}
+}
+
+read_core_exports :: proc(core_dir: string, cache: ^Core_Exports_Cache = nil) -> (exports: [dynamic]string, err: Compile_Error, ok: bool) {
+    if cache != nil {
+        if cached, found := cache.entries[core_dir]; found {
+            return clone_string_slice(cached[:]), {}, true
+        }
+    }
+    core_files, err_files, ok_files := read_package_files(core_dir)
+    if !ok_files {
+        return nil, err_files, false
+    }
+    defer package_file_slice_delete(core_files)
+
+    core_forms := flatten_package_forms(core_files)
+    defer delete(core_forms)
+    collected_exports := collect_public_decl_names(core_forms[:])
+    defer delete(collected_exports)
+    exports = clone_string_slice(collected_exports[:])
+    if cache != nil {
+        if cache.entries == nil {
+            cache.entries = make(map[string][dynamic]string)
+        }
+        cache.entries[strings.clone(core_dir)] = clone_string_slice(exports[:])
+    }
+    return exports, {}, true
+}
+
+append_core_bare_symbol_alias :: proc(aliases: ^[dynamic]Alias_Prefix, anchor_path: string = ".", cache: ^Core_Exports_Cache = nil) -> (Compile_Error, bool) {
     core_dir, err_core, ok_core := resolve_kvist_source_import_path(anchor_path, "kvist:core")
     if !ok_core {
         if err_core.message != "" {
@@ -120,17 +162,10 @@ append_core_bare_symbol_alias :: proc(aliases: ^[dynamic]Alias_Prefix, anchor_pa
     }
     defer delete(core_dir)
 
-    core_files, err_files, ok_files := read_package_files(core_dir)
-    if !ok_files {
-        return err_files, false
+    exports, err_exports, ok_exports := read_core_exports(core_dir, cache)
+    if !ok_exports {
+        return err_exports, false
     }
-    defer package_file_slice_delete(core_files)
-
-    core_forms := flatten_package_forms(core_files)
-    collected_exports := collect_public_decl_names(core_forms[:])
-    exports := clone_string_slice(collected_exports[:])
-    delete(collected_exports)
-    delete(core_forms)
     append(aliases, Alias_Prefix{
         alias = strings.clone("__kvist_core_bare"),
         exports = exports,
