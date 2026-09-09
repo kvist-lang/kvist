@@ -1364,6 +1364,17 @@ emit_static_data_value_expr :: proc(e: ^Emitter, form: CST_Form) -> (string, Com
 }
 
 next_data_literal_name :: proc(e: ^Emitter, backing := false) -> string {
+    // Features are append-only during emission. Index newly appended literals,
+    // including those inherited from another package, instead of rescanning
+    // every previous literal for every generated name. Borrowed keys and the
+    // index have the same temporary lifetime as the other emitter indexes.
+    if e.data_literal_names == nil {
+        e.data_literal_names = make(map[string]bool, context.temp_allocator)
+    }
+    for literal in e.features.data_literals[e.indexed_data_literal_count:] {
+        e.data_literal_names[literal.name] = true
+    }
+    e.indexed_data_literal_count = len(e.features.data_literals)
     name := ""
     counter := &e.temp_counter
     kind := "literal"
@@ -1383,17 +1394,9 @@ next_data_literal_name :: proc(e: ^Emitter, backing := false) -> string {
                 counter^,
             )
         }
-        available := true
-        for literal in e.features.data_literals {
-            if literal.name == name {
-                available = false
-                break
-            }
-        }
-        if available {
+        if !e.data_literal_names[name] {
             break
         }
-        delete(name)
     }
     return name
 }

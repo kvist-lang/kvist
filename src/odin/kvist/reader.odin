@@ -903,18 +903,29 @@ unquote_regex_literal :: proc(text: string) -> string {
 }
 
 map_name :: proc(text: string) -> string {
-    builder := strings.builder_make()
-    defer strings.builder_destroy(&builder)
+    // Allocate the owned result once. Name mapping is a hot path during
+    // emission; a growable builder followed by a clone needlessly allocates
+    // and copies every identifier twice.
+    size := 0
+    for ch in text {
+        size += ch == '?' ? 2 : ch == '!' ? 5 : 1
+    }
+    result := make([]u8, size)
+    offset := 0
     for ch in text {
         if ch == '-' {
-            strings.write_byte(&builder, '_')
+            result[offset] = '_'
+            offset += 1
         } else if ch == '?' {
-            strings.write_string(&builder, "_p")
+            copy(result[offset:], "_p")
+            offset += 2
         } else if ch == '!' {
-            strings.write_string(&builder, "_bang")
+            copy(result[offset:], "_bang")
+            offset += 5
         } else {
-            strings.write_byte(&builder, byte(ch))
+            result[offset] = byte(ch)
+            offset += 1
         }
     }
-    return strings.clone(strings.to_string(builder))
+    return string(result)
 }

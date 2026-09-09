@@ -204,6 +204,8 @@ Emitter :: struct {
     temp_counter:              int,
     data_literal_prefix:       string,
     data_backing_counter:      int,
+    data_literal_names:        map[string]bool,
+    indexed_data_literal_count: int,
     owner_counter:             int,
     attach_next_decl:          bool,
     pending_prefix_directives: [dynamic]string,
