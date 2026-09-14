@@ -11,7 +11,7 @@ Build Kvist, then give the REPL a source file from the project you want to work
 with:
 
 ```sh
-odin build src/cli/kvist
+odin build src/cli/kvist -o:speed
 ./kvist repl examples/language/hello.kvist
 ```
 

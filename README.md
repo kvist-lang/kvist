@@ -93,8 +93,11 @@ repository, and build the Kvist CLI from the repo root:
 ```sh
 git clone https://github.com/kvist-lang/kvist.git
 cd kvist
-odin build src/cli/kvist
+odin build src/cli/kvist -o:speed
 ```
+
+This builds an optimized compiler for normal use. When developing Kvist
+itself, omit `-o:speed` for shorter rebuilds.
 
 Add a main function to a `hello.kvist` file:
 
