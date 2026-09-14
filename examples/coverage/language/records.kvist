@@ -1,4 +1,4 @@
-;; Close port of the Cluck reset records demo.
+;; Struct mutation and set-valued field coverage.
 (package main)
 (import core "kvist:core")
 (import set "kvist:set")
@@ -28,5 +28,5 @@
   (println (records-demo)))
 
 (comment
-  ;; Sets are ordinary map[T]struct{} values in this port.
+  ;; Sets are ordinary map[T]struct{} values in Kvist.
   (records-demo))

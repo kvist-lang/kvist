@@ -1,4 +1,4 @@
-;; Close port of the Cluck reset loop demos.
+;; Loop indexing, break, and continue coverage.
 (package main)
 (import arr "kvist:arr")
 

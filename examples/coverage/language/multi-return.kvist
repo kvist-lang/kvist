@@ -1,4 +1,4 @@
-;; Port of the Cluck reset multi-return demo.
+;; Named multi-return value coverage.
 (package main)
 (defn half-and-ok [x: int] -> [value: int, ok: bool]
   (return (/ x 2) true))

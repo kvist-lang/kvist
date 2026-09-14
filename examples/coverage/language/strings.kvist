@@ -1,4 +1,4 @@
-;; Port of the Cluck reset string demo, using ordinary Odin string operations.
+;; String helper coverage using ordinary Odin string operations.
 (import str "kvist:str")
 (import fmt "core:fmt")
 

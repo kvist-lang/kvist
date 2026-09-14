@@ -1,5 +1,5 @@
-;; Port of the Cluck reset map.set demo. Sets lower to map[T]struct{}, but
-;; there is now an explicit set helper surface for basic set algebra.
+;; Map and set coverage. Sets lower to map[T]struct{}, with an explicit set
+;; helper surface for basic set algebra.
 (package main)
 (import core "kvist:core")
 (import str "kvist:str")
@@ -17,7 +17,7 @@
     (set.add! tags "lisp")
     (set.add! featured "native")
     (set.add! featured "compiled")
-    (set! (get m "lang") "Reset Kvist")
+    (set! (get m "lang") "Kvist")
     (set.add! tags "mutable")
     (let [all-tags (set.union tags featured) :defer
           shared (set.intersection tags featured) :defer

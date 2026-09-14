@@ -1,4 +1,4 @@
-;; Close port of the Cluck reset struct-introspection demo.
+;; Struct metadata introspection coverage.
 (package main)
 (import soa "kvist:soa")
 

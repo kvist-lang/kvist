@@ -10,7 +10,7 @@ import kvist "../src/odin/kvist"
 
 @(test)
 compile_path_supports_multi_file_source_package_directory :: proc(t: ^testing.T) {
-    output, err, ok := kvist.compile_path("examples/coverage/cluck-port/cluck-port-packages.kvist")
+    output, err, ok := kvist.compile_path("examples/coverage/language/packages.kvist")
     testing.expect_value(t, ok, true)
     if !ok {
         testing.expect_value(t, err.message, "")

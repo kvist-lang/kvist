@@ -1,4 +1,4 @@
-;; Close port of the Cluck reset struct-defaults demo.
+;; Default-filled struct construction coverage.
 (package main)
 (defstruct Point
   "A point with float coordinates."

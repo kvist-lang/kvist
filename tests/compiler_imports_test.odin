@@ -10,7 +10,7 @@ import kvist "../src/odin/kvist"
 
 @(test)
 compile_eval_path_rewrites_source_package_aliases :: proc(t: ^testing.T) {
-    output, err, ok := kvist.compile_eval_path("examples/coverage/cluck-port/cluck-port-packages.kvist", "(math.sum-range 0 5)")
+    output, err, ok := kvist.compile_eval_path("examples/coverage/language/packages.kvist", "(math.sum-range 0 5)")
     testing.expect_value(t, ok, true)
     if !ok {
         testing.expect_value(t, err.message, "")
