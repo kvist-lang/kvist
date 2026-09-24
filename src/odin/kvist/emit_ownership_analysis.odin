@@ -368,7 +368,11 @@ emit_borrowed_escape_warning :: proc(e: ^Emitter, owner_name: string, span: Span
     }
     emit_coded_warning(
         e,
-        fmt.tprintf("borrowed value escapes owner %s", owner_name),
+        fmt.tprintf(
+            "borrowed value escapes owner `%s`; `%s` is released when this scope exits, so the borrowed value may become invalid; return an owned copy or keep the value within the owner's lifetime",
+            owner_name,
+            owner_name,
+        ),
         span,
         .Ownership_Borrowed_Escape,
         .Conservative,

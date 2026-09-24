@@ -29,7 +29,7 @@ reject_defer_owned_let_branch_case_return :: proc(t: ^testing.T) {
     _, err, ok := kvist.compile_source(source)
     testing.expect_value(t, ok, false)
     defer delete(err.message)
-    testing.expect_value(t, err.message, "defer-marked binding cannot be returned; remove defer or transfer ownership explicitly")
+    testing.expect_value(t, err.message, "returned value depends on `out`, but `:defer` cleans up `out` when this scope exits, leaving the returned value invalid; return an owned copy, keep the dependent value inside this scope, or remove `:defer` to transfer ownership")
 }
 
 @(test)
@@ -55,6 +55,24 @@ compile_defer_with_resource_passed_to_owned_data_result :: proc(t: ^testing.T) {
     }
     defer delete(output)
     testing.expect_value(t, strings.contains(output, "defer close_handle(handle)"), true)
+}
+
+@(test)
+reject_returning_defer_with_binding :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defn close-buffer [data: [dynamic]byte]
+  (delete data))
+
+(defn load [] -> [dynamic]byte
+  (let [data ([dynamic]byte [1 2]) :defer-with close-buffer]
+    data))`
+
+    _, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, false)
+    defer delete(err.message)
+    testing.expect_value(t, err.message, "returned value depends on `data`, but `:defer-with close-buffer` cleans up `data` when this scope exits, leaving the returned value invalid; return an owned copy, keep the dependent value inside this scope, or remove `:defer-with close-buffer` to transfer ownership")
+    testing.expect_value(t, source[err.span.start:err.span.end], "data")
 }
 
 @(test)
@@ -465,7 +483,7 @@ reject_returning_defer_binding :: proc(t: ^testing.T) {
     _, err, ok := kvist.compile_source(source)
     testing.expect_value(t, ok, false)
     defer delete(err.message)
-    testing.expect_value(t, err.message, "defer-marked binding cannot be returned; remove defer or transfer ownership explicitly")
+    testing.expect_value(t, err.message, "returned value depends on `xs`, but `:defer` cleans up `xs` when this scope exits, leaving the returned value invalid; return an owned copy, keep the dependent value inside this scope, or remove `:defer` to transfer ownership")
 }
 
 @(test)
@@ -483,7 +501,7 @@ reject_returning_defer_binding_inside_struct_literal :: proc(t: ^testing.T) {
     _, err, ok := kvist.compile_source(source)
     testing.expect_value(t, ok, false)
     defer delete(err.message)
-    testing.expect_value(t, err.message, "defer-marked binding cannot be returned; remove defer or transfer ownership explicitly")
+    testing.expect_value(t, err.message, "returned value depends on `xs`, but `:defer` cleans up `xs` when this scope exits, leaving the returned value invalid; return an owned copy, keep the dependent value inside this scope, or remove `:defer` to transfer ownership")
 }
 
 @(test)
@@ -500,7 +518,7 @@ reject_returning_defer_binding_inside_call :: proc(t: ^testing.T) {
     _, err, ok := kvist.compile_source(source)
     testing.expect_value(t, ok, false)
     defer delete(err.message)
-    testing.expect_value(t, err.message, "defer-marked binding cannot be returned; remove defer or transfer ownership explicitly")
+    testing.expect_value(t, err.message, "returned value depends on `xs`, but `:defer` cleans up `xs` when this scope exits, leaving the returned value invalid; return an owned copy, keep the dependent value inside this scope, or remove `:defer` to transfer ownership")
 }
 
 @(test)
@@ -553,7 +571,7 @@ reject_returning_defer_binding_through_local_wrapper :: proc(t: ^testing.T) {
     _, err, ok := kvist.compile_source(source)
     testing.expect_value(t, ok, false)
     defer delete(err.message)
-    testing.expect_value(t, err.message, "defer-marked binding cannot be returned; remove defer or transfer ownership explicitly")
+    testing.expect_value(t, err.message, "returned value depends on `xs`, but `:defer` cleans up `xs` when this scope exits, leaving the returned value invalid; return an owned copy, keep the dependent value inside this scope, or remove `:defer` to transfer ownership")
 }
 
 @(test)
@@ -573,7 +591,7 @@ reject_returning_defer_binding_through_set_bang_wrapper :: proc(t: ^testing.T) {
     _, err, ok := kvist.compile_source(source)
     testing.expect_value(t, ok, false)
     defer delete(err.message)
-    testing.expect_value(t, err.message, "defer-marked binding cannot be returned; remove defer or transfer ownership explicitly")
+    testing.expect_value(t, err.message, "returned value depends on `xs`, but `:defer` cleans up `xs` when this scope exits, leaving the returned value invalid; return an owned copy, keep the dependent value inside this scope, or remove `:defer` to transfer ownership")
 }
 
 @(test)
@@ -594,7 +612,7 @@ reject_returning_defer_binding_in_final_if_points_to_alias_branch :: proc(t: ^te
     _, err, ok := kvist.compile_source(source)
     testing.expect_value(t, ok, false)
     defer delete(err.message)
-    testing.expect_value(t, err.message, "defer-marked binding cannot be returned; remove defer or transfer ownership explicitly")
+    testing.expect_value(t, err.message, "returned value depends on `xs`, but `:defer` cleans up `xs` when this scope exits, leaving the returned value invalid; return an owned copy, keep the dependent value inside this scope, or remove `:defer` to transfer ownership")
     testing.expect_value(t, source[err.span.start:err.span.end], "box")
 }
 

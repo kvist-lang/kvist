@@ -708,12 +708,21 @@ let_defer_return_error :: proc(
             }
         }
         if err_span, ok := body_escape_deferred_binding_span_names(e, body, names[:], returns); ok {
-            message := "defer-marked binding cannot be returned; remove defer or transfer ownership explicitly"
+            marker := ":defer"
             if binding.defer_with_cleanup {
-                message = "defer-with binding cannot be returned; remove cleanup marker or transfer ownership explicitly"
+                marker = ":defer-with"
+                if binding.cleanup.kind == .Symbol {
+                    marker = fmt.tprintf(":defer-with %s", binding.cleanup.text)
+                }
             }
             return Compile_Error{
-                message = message,
+                message = fmt.tprintf(
+                    "returned value depends on `%s`, but `%s` cleans up `%s` when this scope exits, leaving the returned value invalid; return an owned copy, keep the dependent value inside this scope, or remove `%s` to transfer ownership",
+                    delete_name,
+                    marker,
+                    delete_name,
+                    marker,
+                ),
                 span    = err_span,
             }, true
         }

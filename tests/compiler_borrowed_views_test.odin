@@ -221,7 +221,7 @@ compile_warns_for_borrowed_value_escaping_owner :: proc(t: ^testing.T) {
 
     testing.expect_value(t, len(result.warnings), 1)
     if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "borrowed value escapes owner xs")
+        testing.expect_value(t, result.warnings[0].message, "borrowed value escapes owner `xs`; `xs` is released when this scope exits, so the borrowed value may become invalid; return an owned copy or keep the value within the owner's lifetime")
     }
 }
 
@@ -247,7 +247,7 @@ compile_warns_for_bound_borrowed_value_escaping_owner :: proc(t: ^testing.T) {
 
     testing.expect_value(t, len(result.warnings), 1)
     if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "borrowed value escapes owner xs")
+        testing.expect_value(t, result.warnings[0].message, "borrowed value escapes owner `xs`; `xs` is released when this scope exits, so the borrowed value may become invalid; return an owned copy or keep the value within the owner's lifetime")
     }
 }
 
@@ -277,7 +277,7 @@ compile_warns_for_borrowed_value_escaping_in_returned_composite :: proc(t: ^test
 
     testing.expect_value(t, len(result.warnings), 1)
     if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "borrowed value escapes owner xs")
+        testing.expect_value(t, result.warnings[0].message, "borrowed value escapes owner `xs`; `xs` is released when this scope exits, so the borrowed value may become invalid; return an owned copy or keep the value within the owner's lifetime")
     }
 }
 
@@ -360,7 +360,7 @@ compile_warns_for_third_party_conditional_borrowed_assignment_escaping_owner :: 
     testing.expect_value(t, strings.contains(result.output, "#borrowed"), false)
     testing.expect_value(t, len(result.warnings), 1)
     if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "borrowed value escapes owner xs")
+        testing.expect_value(t, result.warnings[0].message, "borrowed value escapes owner `xs`; `xs` is released when this scope exits, so the borrowed value may become invalid; return an owned copy or keep the value within the owner's lifetime")
     }
 }
 
@@ -457,7 +457,7 @@ compile_warns_for_third_party_type_case_borrowed_assignment_escaping_owner :: pr
     testing.expect_value(t, strings.contains(result.output, "#borrowed"), false)
     testing.expect_value(t, len(result.warnings), 1)
     if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "borrowed value escapes owner xs")
+        testing.expect_value(t, result.warnings[0].message, "borrowed value escapes owner `xs`; `xs` is released when this scope exits, so the borrowed value may become invalid; return an owned copy or keep the value within the owner's lifetime")
     }
 }
 
