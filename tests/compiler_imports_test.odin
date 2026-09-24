@@ -1583,6 +1583,70 @@ raw_value :: proc() -> int {
 }
 
 @(test)
+compile_unused_empty_imported_struct_constructor_as_zero_value :: proc(t: ^testing.T) {
+    dir, dir_err := os.make_directory_temp("", "kvist-imported-empty-struct-*", context.allocator)
+    testing.expect_value(t, dir_err == nil, true)
+    if dir_err != nil {
+        return
+    }
+    defer os.remove_all(dir)
+    defer delete(dir)
+
+    support_dir, support_dir_err := os.join_path({dir, "support"}, context.allocator)
+    testing.expect_value(t, support_dir_err == nil, true)
+    if support_dir_err != nil {
+        return
+    }
+    defer delete(support_dir)
+    testing.expect_value(t, os.make_directory_all(support_dir) == nil, true)
+
+    odin_path, odin_path_err := os.join_path({support_dir, "support.odin"}, context.allocator)
+    testing.expect_value(t, odin_path_err == nil, true)
+    if odin_path_err != nil {
+        return
+    }
+    defer delete(odin_path)
+    odin_source := `package support
+
+Options :: struct {
+    limit: int,
+}
+
+State :: struct {
+    opts: ^Options,
+    hits: int,
+}`
+    testing.expect_value(t, os.write_entire_file_from_string(odin_path, odin_source) == nil, true)
+
+    main_path, main_path_err := os.join_path({dir, "main.kvist"}, context.allocator)
+    testing.expect_value(t, main_path_err == nil, true)
+    if main_path_err != nil {
+        return
+    }
+    defer delete(main_path)
+    source := `(package main)
+(import support "support")
+
+(defn unused [] -> support.State
+  (support.State []))
+
+(defn main []
+  (return))`
+    testing.expect_value(t, os.write_entire_file_from_string(main_path, source) == nil, true)
+
+    output, err, ok := kvist.compile_path(main_path)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "return support.State{}"), true)
+    testing.expect_value(t, strings.contains(output, "support.^Options"), false)
+}
+
+@(test)
 compile_imported_enum_case_stmt_uses_source_conditionals :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-imported-enum-case-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)

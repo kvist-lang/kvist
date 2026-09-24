@@ -538,6 +538,15 @@ emit_call_like :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_Error, b
                 if imported_struct_args_use_named_fields(constructor_args) {
                     return emit_imported_struct_named_literal(e, constructor_head_name, imported_fields[:], constructor_args, form.span)
                 }
+                if len(constructor_args) == 1 && constructor_args[0].kind == .Vector {
+                    return emit_imported_struct_positional_literal(
+                        e,
+                        constructor_head_name,
+                        imported_fields[:],
+                        constructor_args[0].items[:],
+                        form.span,
+                    )
+                }
                 return emit_imported_struct_positional_literal(e, constructor_head_name, imported_fields[:], constructor_args, form.span)
             }
         }
