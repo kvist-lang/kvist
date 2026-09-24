@@ -1265,9 +1265,9 @@ compile_data_decode_qualifies_support_inside_nested_source_packages :: proc(t: ^
     defer delete(result.output)
     defer kvist.source_map_slice_delete(result.source_map)
     defer kvist.compile_warning_slice_delete(result.warnings)
-    testing.expect_value(t, strings.contains(result.output, "data__Decode_Error :: app__data__Decode_Error"), true)
-    testing.expect_value(t, strings.contains(result.output, "data__decode_error :: app__data__decode_error"), true)
-    testing.expect_value(t, strings.contains(result.output, "kvist_managed_destroy_data__Decode_Error :: kvist_managed_destroy_app__data__Decode_Error"), true)
+    testing.expect_value(t, strings.contains(result.output, "data__Decode_Error :: app__helper__data__Decode_Error"), true)
+    testing.expect_value(t, strings.contains(result.output, "data__decode_error :: app__helper__data__decode_error"), true)
+    testing.expect_value(t, strings.contains(result.output, "kvist_managed_destroy_data__Decode_Error :: kvist_managed_destroy_app__helper__data__Decode_Error"), true)
 }
 
 @(test)

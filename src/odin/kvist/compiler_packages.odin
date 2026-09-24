@@ -430,10 +430,47 @@ validate_package_conflicts :: proc(files: []Package_File) -> (Compile_Error, boo
     return Compile_Error{}, true
 }
 
-load_source_forms :: proc(dir, prefix: string, loaded_keys, import_keys: ^[dynamic]string, visiting: ^[dynamic]string, core_exports_cache: ^Core_Exports_Cache = nil) -> (Loaded_Forms, Compile_Error, bool) {
-    key := fmt.tprintf("%s|%s", dir, prefix)
-    if contains_text(loaded_keys[:], key) {
-        return Loaded_Forms{}, Compile_Error{}, true
+Loaded_Source_Package :: struct {
+    dir: string,
+    prefix: string,
+    exports: [dynamic]string,
+    raw_exports: [dynamic]string,
+    source_aliases: [dynamic]string,
+}
+
+loaded_source_package_slice_delete :: proc(packages: ^[dynamic]Loaded_Source_Package) {
+    for idx in 0 ..< len(packages^) {
+        delete(packages^[idx].dir)
+        delete(packages^[idx].prefix)
+        delete_string_slice(&packages^[idx].exports)
+        delete_string_slice(&packages^[idx].raw_exports)
+        delete_string_slice(&packages^[idx].source_aliases)
+    }
+    delete(packages^)
+    packages^ = nil
+}
+
+loaded_source_package_forms :: proc(packages: []Loaded_Source_Package, dir: string) -> (Loaded_Forms, bool) {
+    for loaded_package in packages {
+        if loaded_package.dir != dir {
+            continue
+        }
+        return Loaded_Forms{
+            canonical_prefix = strings.clone(loaded_package.prefix),
+            exports = clone_string_slice(loaded_package.exports[:]),
+            raw_exports = clone_string_slice(loaded_package.raw_exports[:]),
+            source_aliases = clone_string_slice(loaded_package.source_aliases[:]),
+        }, true
+    }
+    return Loaded_Forms{}, false
+}
+
+load_source_forms :: proc(dir, prefix: string, loaded_packages: ^[dynamic]Loaded_Source_Package, import_keys: ^[dynamic]string, visiting: ^[dynamic]string, core_exports_cache: ^Core_Exports_Cache = nil) -> (Loaded_Forms, Compile_Error, bool) {
+    // One resolved source directory must produce one set of Odin declarations.
+    // Re-emitting it under another import-chain prefix would split nominal type
+    // identity for structs, enums, unions, and especially distinct types.
+    if loaded, ok_loaded := loaded_source_package_forms(loaded_packages[:], dir); ok_loaded {
+        return loaded, Compile_Error{}, true
     }
     if contains_text(visiting[:], dir) {
         cycle_start := 0
@@ -496,7 +533,11 @@ load_source_forms :: proc(dir, prefix: string, loaded_keys, import_keys: ^[dynam
     if !ok_core_alias {
         return Loaded_Forms{}, err_core_alias, false
     }
-    result := Loaded_Forms{}
+    canonical_prefix := prefix
+    if canonical_prefix == "" {
+        canonical_prefix = package_name
+    }
+    result := Loaded_Forms{canonical_prefix = strings.clone(canonical_prefix)}
     for name in exported {
         append(&result.exports, strings.clone(name))
     }
@@ -504,10 +545,7 @@ load_source_forms :: proc(dir, prefix: string, loaded_keys, import_keys: ^[dynam
         append(&result.raw_exports, strings.clone(name))
     }
     if package_name != "" {
-        self_prefix := prefix
-        if self_prefix == "" {
-            self_prefix = package_name
-        }
+        self_prefix := canonical_prefix
         append_unique_string_clone(&result.source_aliases, package_name)
         if len(raw_exported) > 0 {
             raw_prefix := odin_package_import_alias(self_prefix)
@@ -538,11 +576,11 @@ load_source_forms :: proc(dir, prefix: string, loaded_keys, import_keys: ^[dynam
                 return result, err_resolve, false
             }
             nested_prefix := alias
-            if prefix != "" {
-                nested_prefix = fmt.tprintf("%s__%s", prefix, alias)
+            if canonical_prefix != "" {
+                nested_prefix = fmt.tprintf("%s__%s", canonical_prefix, alias)
             }
             nested_import_keys: [dynamic]string
-            nested, err_nested, ok_nested := load_source_forms(resolved, nested_prefix, loaded_keys, &nested_import_keys, visiting, core_exports_cache)
+            nested, err_nested, ok_nested := load_source_forms(resolved, nested_prefix, loaded_packages, &nested_import_keys, visiting, core_exports_cache)
             delete_string_slice(&nested_import_keys)
             delete(resolved)
             if !ok_nested {
@@ -552,10 +590,14 @@ load_source_forms :: proc(dir, prefix: string, loaded_keys, import_keys: ^[dynam
             }
             nested_exports := clone_string_slice(nested.exports[:])
             nested_raw_exports := clone_string_slice(nested.raw_exports[:])
+            imported_prefix := nested.canonical_prefix
+            if imported_prefix == "" {
+                imported_prefix = nested_prefix
+            }
             append(&aliases, Alias_Prefix{
                 alias = alias,
-                prefix = strings.clone(nested_prefix),
-                raw_prefix = odin_package_import_alias(nested_prefix),
+                prefix = strings.clone(imported_prefix),
+                raw_prefix = odin_package_import_alias(imported_prefix),
                 exports = nested_exports,
                 raw_exports = nested_raw_exports,
                 refer_names = source_import_refer_names(top.form),
@@ -597,7 +639,7 @@ load_source_forms :: proc(dir, prefix: string, loaded_keys, import_keys: ^[dynam
                 append_import_form_unique(&result.imports, import_keys, rewrite_relative_odin_import_form(file.path, top))
                 continue
             }
-            rewritten, err_rewrite, ok_rewrite := rewrite_top_form(top, locals[:], private_macros[:], aliases[:], prefix)
+            rewritten, err_rewrite, ok_rewrite := rewrite_top_form(top, locals[:], private_macros[:], aliases[:], canonical_prefix)
             if !ok_rewrite {
                 return result, err_rewrite, false
             }
@@ -605,7 +647,13 @@ load_source_forms :: proc(dir, prefix: string, loaded_keys, import_keys: ^[dynam
         }
     }
 
-    append(loaded_keys, key)
+    append(loaded_packages, Loaded_Source_Package{
+        dir = strings.clone(dir),
+        prefix = strings.clone(canonical_prefix),
+        exports = clone_string_slice(result.exports[:]),
+        raw_exports = clone_string_slice(result.raw_exports[:]),
+        source_aliases = clone_string_slice(result.source_aliases[:]),
+    })
     return result, Compile_Error{}, true
 }
 
@@ -644,7 +692,8 @@ load_root_file_forms :: proc(
 
     aliases: [dynamic]Alias_Prefix
     import_keys: [dynamic]string
-    loaded_keys: [dynamic]string
+    loaded_packages: [dynamic]Loaded_Source_Package
+    defer loaded_source_package_slice_delete(&loaded_packages)
     visiting: [dynamic]string
     result := Loaded_Forms{}
     all_forms := flatten_package_forms(files[:])
@@ -671,16 +720,20 @@ load_root_file_forms :: proc(
                 return result, err_resolve, false
             }
             nested_import_keys: [dynamic]string
-            nested, err_nested, ok_nested := load_source_forms(resolved, alias, &loaded_keys, &nested_import_keys, &visiting, &core_exports_cache)
+            nested, err_nested, ok_nested := load_source_forms(resolved, alias, &loaded_packages, &nested_import_keys, &visiting, &core_exports_cache)
             if !ok_nested {
                 return result, err_nested, false
             }
             nested_exports := nested.exports
             nested_raw_exports := nested.raw_exports
+            imported_prefix := nested.canonical_prefix
+            if imported_prefix == "" {
+                imported_prefix = alias
+            }
             append(&aliases, Alias_Prefix{
                 alias = alias,
-                prefix = alias,
-                raw_prefix = odin_package_import_alias(alias),
+                prefix = strings.clone(imported_prefix),
+                raw_prefix = odin_package_import_alias(imported_prefix),
                 exports = nested_exports,
                 raw_exports = nested_raw_exports,
                 refer_names = source_import_refer_names(top.form),
@@ -708,16 +761,20 @@ load_root_file_forms :: proc(
             return result, err_resolve, false
         }
         nested_import_keys: [dynamic]string
-        nested, err_nested, ok_nested := load_source_forms(resolved, alias, &loaded_keys, &nested_import_keys, &visiting, &core_exports_cache)
+        nested, err_nested, ok_nested := load_source_forms(resolved, alias, &loaded_packages, &nested_import_keys, &visiting, &core_exports_cache)
         if !ok_nested {
             return result, err_nested, false
         }
         nested_exports := nested.exports
         nested_raw_exports := nested.raw_exports
+        imported_prefix := nested.canonical_prefix
+        if imported_prefix == "" {
+            imported_prefix = alias
+        }
         append(&aliases, Alias_Prefix{
             alias = alias,
-            prefix = alias,
-            raw_prefix = odin_package_import_alias(alias),
+            prefix = strings.clone(imported_prefix),
+            raw_prefix = odin_package_import_alias(imported_prefix),
             exports = nested_exports,
             raw_exports = nested_raw_exports,
             refer_names = source_import_refer_names(top.form),
@@ -785,7 +842,8 @@ load_root_source_forms :: proc(forms: []CST_Top_Form) -> (Loaded_Forms, Compile_
     defer core_exports_cache_delete(&core_exports_cache)
     aliases: [dynamic]Alias_Prefix
     import_keys: [dynamic]string
-    loaded_keys: [dynamic]string
+    loaded_packages: [dynamic]Loaded_Source_Package
+    defer loaded_source_package_slice_delete(&loaded_packages)
     visiting: [dynamic]string
     result := Loaded_Forms{}
     locals := collect_local_decl_names(forms)
@@ -807,16 +865,20 @@ load_root_source_forms :: proc(forms: []CST_Top_Form) -> (Loaded_Forms, Compile_
             return result, err_resolve, false
         }
         nested_import_keys: [dynamic]string
-        nested, err_nested, ok_nested := load_source_forms(resolved, alias, &loaded_keys, &nested_import_keys, &visiting, &core_exports_cache)
+        nested, err_nested, ok_nested := load_source_forms(resolved, alias, &loaded_packages, &nested_import_keys, &visiting, &core_exports_cache)
         if !ok_nested {
             return result, err_nested, false
         }
         nested_exports := nested.exports
         nested_raw_exports := nested.raw_exports
+        imported_prefix := nested.canonical_prefix
+        if imported_prefix == "" {
+            imported_prefix = alias
+        }
         append(&aliases, Alias_Prefix{
             alias = alias,
-            prefix = alias,
-            raw_prefix = odin_package_import_alias(alias),
+            prefix = strings.clone(imported_prefix),
+            raw_prefix = odin_package_import_alias(imported_prefix),
             exports = nested_exports,
             raw_exports = nested_raw_exports,
             refer_names = source_import_refer_names(top.form),

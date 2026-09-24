@@ -20,6 +20,7 @@ Alias_Prefix :: struct {
 
 Loaded_Forms :: struct {
     has_package: bool,
+    canonical_prefix: string,
     package_decl: CST_Top_Form,
     imports: [dynamic]CST_Top_Form,
     decls: [dynamic]CST_Top_Form,
@@ -29,6 +30,9 @@ Loaded_Forms :: struct {
 }
 
 loaded_forms_delete :: proc(forms: ^Loaded_Forms) {
+    if forms.canonical_prefix != "" {
+        delete(forms.canonical_prefix)
+    }
     delete_borrowed_cst_top_form_slice(&forms.imports)
     delete_borrowed_cst_top_form_slice(&forms.decls)
     delete_string_slice(&forms.exports)

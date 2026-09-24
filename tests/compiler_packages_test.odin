@@ -1047,6 +1047,120 @@ compile_source_package_can_define_set_type_name :: proc(t: ^testing.T) {
 }
 
 @(test)
+compile_source_package_forwarding_preserves_distinct_type_identity :: proc(t: ^testing.T) {
+    dir, dir_err := os.make_directory_temp("", "kvist-forwarded-distinct-*", context.allocator)
+    testing.expect_value(t, dir_err == nil, true)
+    if dir_err != nil {
+        return
+    }
+    defer os.remove_all(dir)
+    defer delete(dir)
+
+    db_dir, db_dir_err := os.join_path({dir, "db"}, context.allocator)
+    testing.expect_value(t, db_dir_err == nil, true)
+    if db_dir_err != nil {
+        return
+    }
+    defer delete(db_dir)
+    testing.expect_value(t, os.make_directory_all(db_dir) == nil, true)
+
+    db_path, db_path_err := os.join_path({db_dir, "db.kvist"}, context.allocator)
+    testing.expect_value(t, db_path_err == nil, true)
+    if db_path_err != nil {
+        return
+    }
+    defer delete(db_path)
+    db_source := `(package db)
+
+(def DB (distinct rawptr))
+
+(defn open [] -> DB
+  (DB nil))`
+    testing.expect_value(t, os.write_entire_file_from_string(db_path, db_source) == nil, true)
+
+    middle_dir, middle_dir_err := os.join_path({dir, "middle"}, context.allocator)
+    testing.expect_value(t, middle_dir_err == nil, true)
+    if middle_dir_err != nil {
+        return
+    }
+    defer delete(middle_dir)
+    testing.expect_value(t, os.make_directory_all(middle_dir) == nil, true)
+
+    middle_path, middle_path_err := os.join_path({middle_dir, "middle.kvist"}, context.allocator)
+    testing.expect_value(t, middle_path_err == nil, true)
+    if middle_path_err != nil {
+        return
+    }
+    defer delete(middle_path)
+    middle_source := `(package middle)
+(import db "../db")
+
+(def DB db.DB)
+
+(defn forward [value: DB] -> DB
+  value)`
+    testing.expect_value(t, os.write_entire_file_from_string(middle_path, middle_source) == nil, true)
+
+    main_path, main_path_err := os.join_path({dir, "main.kvist"}, context.allocator)
+    testing.expect_value(t, main_path_err == nil, true)
+    if main_path_err != nil {
+        return
+    }
+    defer delete(main_path)
+    main_source := `(package main)
+(import db "db")
+(import middle "middle")
+
+(defn main []
+  (discard (middle.forward (db.open))))`
+    testing.expect_value(t, os.write_entire_file_from_string(main_path, main_source) == nil, true)
+
+    output, err, ok := kvist.compile_path(main_path)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, count_substring(output, ":: distinct rawptr"), 1)
+    testing.expect_value(t, strings.contains(output, "middle__DB :: db__DB"), true)
+
+    odin_dir, odin_dir_err := os.join_path({dir, "generated"}, context.allocator)
+    testing.expect_value(t, odin_dir_err == nil, true)
+    if odin_dir_err != nil {
+        return
+    }
+    defer delete(odin_dir)
+    testing.expect_value(t, os.make_directory_all(odin_dir) == nil, true)
+
+    odin_path, odin_path_err := os.join_path({odin_dir, "main.odin"}, context.allocator)
+    testing.expect_value(t, odin_path_err == nil, true)
+    if odin_path_err != nil {
+        return
+    }
+    defer delete(odin_path)
+    testing.expect_value(t, os.write_entire_file_from_string(odin_path, output) == nil, true)
+
+    repo_root := compiler_test_repo_root()
+    state, stdout, stderr, exec_err := os.process_exec(
+        os.Process_Desc{
+            command     = {"odin", "check", odin_dir},
+            working_dir = repo_root,
+        },
+        context.allocator,
+    )
+    defer delete(stdout)
+    defer delete(stderr)
+    testing.expect_value(t, exec_err == nil, true)
+    if exec_err != nil {
+        return
+    }
+    testing.expect_value(t, state.exited, true)
+    testing.expect_value(t, state.exit_code, 0)
+}
+
+@(test)
 compile_source_package_rewrites_overload_members :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-source-package-overload-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)
