@@ -187,12 +187,7 @@ symbol_head_needs_type_conversion_parens :: proc(head: string) -> bool {
 }
 
 qualify_imported_odin_field_type :: proc(alias, type_text: string) -> string {
-    text := strings.trim_space(type_text)
-    if text == "" || type_text_is_builtin_odin_scalar(text) ||
-       strings.contains_any(text, ".[](), ") || strings.has_prefix(text, "#") {
-        return strings.clone(text)
-    }
-    return fmt.tprintf("%s.%s", alias, text)
+    return qualify_imported_odin_type(alias, type_text)
 }
 
 delete_struct_field_slice :: proc(fields: ^[dynamic]Struct_Field) {

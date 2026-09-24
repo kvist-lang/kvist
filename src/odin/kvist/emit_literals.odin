@@ -1117,15 +1117,87 @@ imported_interop_call_matches :: proc(e: ^Emitter, head_name, path, member: stri
     return false
 }
 
+qualify_imported_odin_proc_part :: proc(alias, part: string) -> string {
+    text := strings.trim_space(part)
+    colon := top_level_colon_index(text)
+    if colon < 0 {
+        return qualify_imported_odin_type(alias, text)
+    }
+    name := strings.trim_space(text[:colon])
+    ty := qualify_imported_odin_type(alias, text[colon+1:])
+    defer delete(ty)
+    return fmt.tprintf("%s: %s", name, ty)
+}
+
+qualify_imported_odin_proc_type :: proc(alias, type_text: string) -> (string, bool) {
+    text := strings.trim_space(type_text)
+    if !strings.has_prefix(text, "proc(") {
+        return "", false
+    }
+
+    close := -1
+    depth := 0
+    for ch, idx in text[len("proc"):] {
+        switch ch {
+        case '(':
+            depth += 1
+        case ')':
+            depth -= 1
+            if depth == 0 {
+                close = len("proc") + idx
+                break
+            }
+        }
+    }
+    if close < len("proc(") {
+        return "", false
+    }
+
+    builder := strings.builder_make()
+    defer strings.builder_destroy(&builder)
+    strings.write_string(&builder, "proc(")
+    parts := split_top_level_commas(text[len("proc("):close])
+    defer delete(parts)
+    for part, idx in parts {
+        if part == "" {
+            continue
+        }
+        if idx > 0 {
+            strings.write_string(&builder, ", ")
+        }
+        qualified := qualify_imported_odin_proc_part(alias, part)
+        strings.write_string(&builder, qualified)
+        delete(qualified)
+    }
+    strings.write_byte(&builder, ')')
+
+    suffix := strings.trim_space(text[close+1:])
+    if suffix != "" {
+        if !strings.has_prefix(suffix, "->") {
+            return "", false
+        }
+        return_type := qualify_imported_odin_type(alias, suffix[2:])
+        defer delete(return_type)
+        fmt.sbprintf(&builder, " -> %s", return_type)
+    }
+    return strings.clone(strings.to_string(builder)), true
+}
+
 qualify_imported_odin_type :: proc(alias, type_text: string) -> string {
     text := strings.trim_space(type_text)
     if text == "" {
         return ""
     }
+    if type_text_is_builtin_odin_scalar(text) {
+        return strings.clone(text)
+    }
     if strings.has_prefix(text, "^") {
         inner := qualify_imported_odin_type(alias, text[1:])
         defer delete(inner)
         return fmt.tprintf("^%s", inner)
+    }
+    if proc_type, ok_proc := qualify_imported_odin_proc_type(alias, text); ok_proc {
+        return proc_type
     }
     if strings.contains_any(text, ".[](), ") || strings.has_prefix(text, "#") {
         return strings.clone(text)
