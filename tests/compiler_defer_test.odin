@@ -404,6 +404,35 @@ compile_let_defer_final_case_scalar_use :: proc(t: ^testing.T) {
 }
 
 @(test)
+compile_let_defer_scalar_derived_struct :: proc(t: ^testing.T) {
+    source := `(package main)
+(import core "kvist:core")
+
+(defstruct Summary [
+  count: int
+  empty?: bool
+])
+
+(defn summarize [] -> Summary
+  (let [xs ([dynamic]int [1 2 3]) :defer]
+    (Summary
+      :count (count xs)
+      :empty? (= (count xs) 0))))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        defer delete(err.message)
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "defer delete(xs)"), true)
+    testing.expect_value(t, strings.contains(output, "return Summary{"), true)
+}
+
+@(test)
 compile_let_defer_binding :: proc(t: ^testing.T) {
     source := `(package main)
 

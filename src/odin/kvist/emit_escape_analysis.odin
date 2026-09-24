@@ -103,15 +103,71 @@ set_bang_assigned_name :: proc(form: CST_Form) -> (string, bool) {
 }
 
 type_text_is_non_owned_scalar :: proc(text: string) -> bool {
-    switch text {
+    switch strings.trim_space(text) {
     case "bool", "int", "i64", "f64", "float", "string", "rune", "byte", "typeid", "rawptr":
         return true
     }
     return false
 }
 
-return_spec_is_non_owned_scalar :: proc(returns: Return_Spec) -> bool {
-    return returns.kind == .Single && type_text_is_non_owned_scalar(returns.single_ty)
+type_text_is_plain_value_scalar :: proc(text: string) -> bool {
+    switch strings.trim_space(text) {
+    case "bool", "int", "i8", "i16", "i32", "i64", "i128",
+         "uint", "u8", "u16", "u32", "u64", "u128", "uintptr",
+         "f16", "f32", "f64", "float",
+         "complex32", "complex64", "complex128",
+         "rune", "byte", "typeid":
+        return true
+    }
+    return false
+}
+
+type_text_is_plain_value :: proc(e: ^Emitter, text: string, depth: int = 0) -> bool {
+    if depth > 16 {
+        return false
+    }
+    trimmed := strings.trim_space(text)
+    if type_text_is_plain_value_scalar(trimmed) {
+        return true
+    }
+    if _, ok_enum := find_enum_decl(e, trimmed); ok_enum {
+        return true
+    }
+    if type_text_is_fixed_array(trimmed) {
+        close := strings.index(trimmed, "]")
+        return close > 1 && close+1 < len(trimmed) &&
+               type_text_is_plain_value(e, trimmed[close+1:], depth+1)
+    }
+    if struct_decl, ok_struct := find_struct_decl(e, trimmed); ok_struct {
+        for field in struct_decl.fields {
+            if field.owns_string ||
+               field.owns_dynamic_array ||
+               !type_text_is_plain_value(e, field.ty, depth+1) {
+                return false
+            }
+        }
+        return true
+    }
+    if union_decl, ok_union := find_union_decl(e, trimmed); ok_union {
+        for variant in union_decl.variants {
+            if !type_text_is_plain_value(e, variant.ty, depth+1) {
+                return false
+            }
+        }
+        return true
+    }
+    return false
+}
+
+return_spec_is_non_owned_value :: proc(e: ^Emitter, returns: Return_Spec) -> bool {
+    if returns.kind != .Single {
+        return false
+    }
+    // Keep the established direct-scalar behavior. Aggregates use the stricter
+    // plain-value classification so strings, pointers, slices, and owned
+    // collections nested in them still participate in escape analysis.
+    return type_text_is_non_owned_scalar(returns.single_ty) ||
+           type_text_is_plain_value(e, returns.single_ty)
 }
 
 body_escape_deferred_binding_span_names :: proc(e: ^Emitter, forms: []CST_Form, names: []string, returns: Return_Spec) -> (Span, bool) {
@@ -193,7 +249,7 @@ form_escape_deferred_binding_span_names :: proc(e: ^Emitter, form: CST_Form, nam
     if !form_mentions_any_binding_name(form, names) {
         return {}, false
     }
-    if return_spec_is_non_owned_scalar(returns) {
+    if return_spec_is_non_owned_value(e, returns) {
         return {}, false
     }
     if form_is_borrowed_view_of_tracked_name(form, names) {
@@ -491,7 +547,7 @@ form_escape_owned_temp_result_span_names :: proc(e: ^Emitter, form: CST_Form, na
     if len(names) == 0 && form_is_owned_temp_escape_result(form, e) {
         return form.span, true
     }
-    if len(names) > 0 && return_spec_is_non_owned_scalar(returns) {
+    if len(names) > 0 && return_spec_is_non_owned_value(e, returns) {
         return {}, false
     }
 
@@ -521,7 +577,7 @@ form_escape_owned_temp_result_span_names :: proc(e: ^Emitter, form: CST_Form, na
                 }
                 return {}, false
             }
-            if !return_spec_is_non_owned_scalar(returns) {
+            if !return_spec_is_non_owned_value(e, returns) {
                 return form.span, true
             }
             return {}, false
@@ -601,7 +657,7 @@ form_escape_owned_temp_result_span_names :: proc(e: ^Emitter, form: CST_Form, na
                 }
                 return {}, false
             }
-            if !return_spec_is_non_owned_scalar(returns) {
+            if !return_spec_is_non_owned_value(e, returns) {
                 return form.span, true
             }
             return {}, false
