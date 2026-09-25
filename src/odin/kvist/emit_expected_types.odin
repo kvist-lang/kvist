@@ -215,7 +215,68 @@ proc_literal_type_text :: proc(lit: Proc_Literal) -> string {
     return strings.clone(strings.to_string(builder))
 }
 
-validate_proc_literal_for_expected_type :: proc(form: CST_Form, expected_type: string) -> (Compile_Error, bool) {
+// Callback validation runs before Odin can apply type aliases. Resolve aliases
+// here so forwarded source-package types compare by identity rather than by the
+// spelling used at either side of the package boundary.
+resolve_callback_type_aliases :: proc(e: ^Emitter, type_text: string, depth := 0) -> string {
+    text := strings.trim_space(type_text)
+    if e == nil || text == "" || depth > 16 {
+        return strings.clone(text)
+    }
+    ensure_emitter_indexes(e)
+
+    builder := strings.builder_make()
+    defer strings.builder_destroy(&builder)
+    i := 0
+    for i < len(text) {
+        if !type_identifier_start(text[i]) {
+            strings.write_byte(&builder, text[i])
+            i += 1
+            continue
+        }
+
+        start := i
+        i += 1
+        for i < len(text) && type_identifier_continue(text[i]) {
+            i += 1
+        }
+        for i+1 < len(text) && text[i] == '.' && type_identifier_start(text[i+1]) {
+            i += 2
+            for i < len(text) && type_identifier_continue(text[i]) {
+                i += 1
+            }
+        }
+
+        token := text[start:i]
+        if idx, found := e.const_indices[token];
+           found && e.decls[idx].const_decl.is_type_alias &&
+           e.decls[idx].const_decl.type_alias != token {
+            resolved := resolve_callback_type_aliases(
+                e,
+                e.decls[idx].const_decl.type_alias,
+                depth+1,
+            )
+            strings.write_string(&builder, resolved)
+            delete(resolved)
+        } else {
+            strings.write_string(&builder, token)
+        }
+    }
+    return strings.clone(strings.to_string(builder))
+}
+
+callback_type_texts_equivalent :: proc(e: ^Emitter, lhs, rhs: string) -> bool {
+    if strings.trim_space(lhs) == strings.trim_space(rhs) {
+        return true
+    }
+    resolved_lhs := resolve_callback_type_aliases(e, lhs)
+    defer delete(resolved_lhs)
+    resolved_rhs := resolve_callback_type_aliases(e, rhs)
+    defer delete(resolved_rhs)
+    return resolved_lhs == resolved_rhs
+}
+
+validate_proc_literal_for_expected_type :: proc(e: ^Emitter, form: CST_Form, expected_type: string) -> (Compile_Error, bool) {
     if expected_type == "" || !type_text_is_proc(expected_type) || form.kind != .List || len(form.items) == 0 || !is_symbol(form.items[0], "fn") {
         return {}, false
     }
@@ -244,7 +305,7 @@ validate_proc_literal_for_expected_type :: proc(form: CST_Form, expected_type: s
         if strings.contains(expected_param, "$") {
             continue
         }
-        if expected_param != parsed.params[idx].ty {
+        if !callback_type_texts_equivalent(e, expected_param, parsed.params[idx].ty) {
             actual := proc_literal_type_text(parsed)
             defer delete(actual)
             return Compile_Error{message = fmt.tprintf("expected %s callback, got %s", expected_type, actual), span = form.span}, true
@@ -252,7 +313,9 @@ validate_proc_literal_for_expected_type :: proc(form: CST_Form, expected_type: s
     }
     expected_return, expected_has_return := proc_type_single_return_type(expected_type)
     if expected_has_return {
-        if parsed.returns.kind != .Single || (!strings.contains(expected_return, "$") && parsed.returns.single_ty != expected_return) {
+        if parsed.returns.kind != .Single ||
+           (!strings.contains(expected_return, "$") &&
+            !callback_type_texts_equivalent(e, parsed.returns.single_ty, expected_return)) {
             actual := proc_literal_type_text(parsed)
             defer delete(actual)
             return Compile_Error{message = fmt.tprintf("expected %s callback, got %s", expected_type, actual), span = form.span}, true
@@ -294,7 +357,7 @@ validate_known_proc_for_expected_type :: proc(e: ^Emitter, form: CST_Form, expec
         if strings.contains(expected_param, "$") {
             continue
         }
-        if expected_param != proc_decl.params[idx].ty {
+        if !callback_type_texts_equivalent(e, expected_param, proc_decl.params[idx].ty) {
             actual := proc_decl_type_text(proc_decl)
             defer delete(actual)
             return Compile_Error{message = fmt.tprintf("expected %s callback, got %s", expected_type, actual), span = form.span}, true
@@ -302,7 +365,9 @@ validate_known_proc_for_expected_type :: proc(e: ^Emitter, form: CST_Form, expec
     }
     expected_return, expected_has_return := proc_type_single_return_type(expected_type)
     if expected_has_return {
-        if proc_decl.returns.kind != .Single || (!strings.contains(expected_return, "$") && proc_decl.returns.single_ty != expected_return) {
+        if proc_decl.returns.kind != .Single ||
+           (!strings.contains(expected_return, "$") &&
+            !callback_type_texts_equivalent(e, proc_decl.returns.single_ty, expected_return)) {
             actual := proc_decl_type_text(proc_decl)
             defer delete(actual)
             return Compile_Error{message = fmt.tprintf("expected %s callback, got %s", expected_type, actual), span = form.span}, true
@@ -319,7 +384,7 @@ emit_expr_for_expected_type :: proc(e: ^Emitter, form: CST_Form, expected_type :
     if err_proc, bad_proc := validate_known_proc_for_expected_type(e, form, expected_type); bad_proc {
         return "", err_proc, false
     }
-    if err_proc_literal, bad_proc_literal := validate_proc_literal_for_expected_type(form, expected_type); bad_proc_literal {
+    if err_proc_literal, bad_proc_literal := validate_proc_literal_for_expected_type(e, form, expected_type); bad_proc_literal {
         return "", err_proc_literal, false
     }
     if expected_type != "" && form_is_expected_zero(form) {

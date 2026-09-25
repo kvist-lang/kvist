@@ -1161,6 +1161,123 @@ compile_source_package_forwarding_preserves_distinct_type_identity :: proc(t: ^t
 }
 
 @(test)
+compile_source_package_callback_accepts_forwarded_odin_type_aliases :: proc(t: ^testing.T) {
+    dir, dir_err := os.make_directory_temp("", "kvist-forwarded-callback-*", context.allocator)
+    testing.expect_value(t, dir_err == nil, true)
+    if dir_err != nil {
+        return
+    }
+    defer os.remove_all(dir)
+    defer delete(dir)
+
+    vendor_dir, vendor_dir_err := os.join_path({dir, "vendor"}, context.allocator)
+    testing.expect_value(t, vendor_dir_err == nil, true)
+    if vendor_dir_err != nil {
+        return
+    }
+    defer delete(vendor_dir)
+    testing.expect_value(t, os.make_directory_all(vendor_dir) == nil, true)
+
+    vendor_path, vendor_path_err := os.join_path({vendor_dir, "vendor.odin"}, context.allocator)
+    testing.expect_value(t, vendor_path_err == nil, true)
+    if vendor_path_err != nil {
+        return
+    }
+    defer delete(vendor_path)
+    vendor_source := `package vendor
+
+Request :: struct {}
+Response :: struct {}
+Handle_Proc :: proc(req: ^Request, res: ^Response)
+
+accept :: proc(callback: Handle_Proc) {
+    _ = callback
+}`
+    testing.expect_value(t, os.write_entire_file_from_string(vendor_path, vendor_source) == nil, true)
+
+    wrapper_dir, wrapper_dir_err := os.join_path({dir, "wrapper"}, context.allocator)
+    testing.expect_value(t, wrapper_dir_err == nil, true)
+    if wrapper_dir_err != nil {
+        return
+    }
+    defer delete(wrapper_dir)
+    testing.expect_value(t, os.make_directory_all(wrapper_dir) == nil, true)
+
+    wrapper_path, wrapper_path_err := os.join_path({wrapper_dir, "wrapper.kvist"}, context.allocator)
+    testing.expect_value(t, wrapper_path_err == nil, true)
+    if wrapper_path_err != nil {
+        return
+    }
+    defer delete(wrapper_path)
+    wrapper_source := `(package wrapper)
+(import h "../vendor")
+
+(def Request h.Request)
+(def Response h.Response)
+
+(defn accept [callback: (fn [req: ^h.Request, res: ^h.Response])]
+  (h.accept callback))`
+    testing.expect_value(t, os.write_entire_file_from_string(wrapper_path, wrapper_source) == nil, true)
+
+    main_path, main_path_err := os.join_path({dir, "main.kvist"}, context.allocator)
+    testing.expect_value(t, main_path_err == nil, true)
+    if main_path_err != nil {
+        return
+    }
+    defer delete(main_path)
+    main_source := `(package main)
+(import wrapper "wrapper")
+
+(defn handle [req: ^wrapper.Request, res: ^wrapper.Response]
+  (discard req)
+  (discard res))
+
+(defn main []
+  (wrapper.accept handle))`
+    testing.expect_value(t, os.write_entire_file_from_string(main_path, main_source) == nil, true)
+
+    output, err, ok := kvist.compile_path(main_path)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "wrapper__Request :: h.Request"), true)
+    testing.expect_value(t, strings.contains(output, "handle :: proc(req: ^wrapper__Request, res: ^wrapper__Response)"), true)
+    testing.expect_value(t, strings.contains(output, "wrapper__accept(handle)"), true)
+
+    odin_path, odin_path_err := os.join_path({dir, "generated.odin"}, context.allocator)
+    testing.expect_value(t, odin_path_err == nil, true)
+    if odin_path_err != nil {
+        return
+    }
+    defer delete(odin_path)
+    testing.expect_value(t, os.write_entire_file_from_string(odin_path, output) == nil, true)
+
+    repo_root := compiler_test_repo_root()
+    state, stdout, stderr, exec_err := os.process_exec(
+        os.Process_Desc{
+            command     = {"odin", "check", dir},
+            working_dir = repo_root,
+        },
+        context.allocator,
+    )
+    defer delete(stdout)
+    defer delete(stderr)
+    testing.expect_value(t, exec_err == nil, true)
+    if exec_err != nil {
+        return
+    }
+    testing.expect_value(t, state.exited, true)
+    if state.exit_code != 0 {
+        testing.expect_value(t, string(stderr), "")
+    }
+    testing.expect_value(t, state.exit_code, 0)
+}
+
+@(test)
 compile_source_package_rewrites_overload_members :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-source-package-overload-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)
