@@ -457,6 +457,21 @@ proc_decl_transfers_param_in_result :: proc(e: ^Emitter, proc_decl: ^Proc_Decl, 
     return form_transfers_owned_name(e, proc_decl.body[len(proc_decl.body)-1], name, true)
 }
 
+call_arg_targets_owned_param :: proc(e: ^Emitter, form: CST_Form, arg_index: int) -> bool {
+    if e == nil ||
+       form.kind != .List ||
+       len(form.items) == 0 ||
+       form.items[0].kind != .Symbol ||
+       arg_index <= 0 {
+        return false
+    }
+    _, proc_decl, ok_proc := resolve_proc_call_decl(e, form.items[0].text)
+    if !ok_proc || proc_decl == nil || arg_index-1 >= len(proc_decl.params) {
+        return false
+    }
+    return proc_decl.params[arg_index-1].ownership == .Owned
+}
+
 call_arg_transfers_owned_result :: proc(e: ^Emitter, form: CST_Form, arg_index: int) -> bool {
     if e == nil ||
        form.kind != .List ||
@@ -685,6 +700,16 @@ form_transfers_owned_name :: proc(e: ^Emitter, form: CST_Form, name: string, can
     if ok && form_transfers_owned_args(form) {
         for item in form.items[2:] {
             if item.kind == .Symbol && map_name(item.text) == name {
+                return true
+            }
+        }
+    }
+
+    if ok && e != nil {
+        for item, item_index in form.items[1:] {
+            if item.kind == .Symbol &&
+               map_name(item.text) == name &&
+               call_arg_targets_owned_param(e, form, item_index+1) {
                 return true
             }
         }

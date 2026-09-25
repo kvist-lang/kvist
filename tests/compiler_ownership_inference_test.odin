@@ -68,6 +68,47 @@ compile_nested_owned_argument_transfer_does_not_delete_temporary :: proc(t: ^tes
 }
 
 @(test)
+compile_transitive_owned_parameter_transfer_does_not_release_temporary :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defn consume [value: Data] -> bool
+  (defer (data.release value))
+  true)
+
+(defn forward [value: Data] -> bool
+  (consume value))
+
+(defn make-command [] -> Data
+  {:status :ready})
+
+(defn demo [] -> bool
+  (forward (make-command)))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    demo_start := strings.index(output, "demo :: proc()")
+    testing.expect(t, demo_start >= 0)
+    if demo_start < 0 {
+        return
+    }
+    demo_end_relative := strings.index(output[demo_start:], "\n}")
+    testing.expect(t, demo_end_relative >= 0)
+    if demo_end_relative < 0 {
+        return
+    }
+    demo := output[demo_start:demo_start+demo_end_relative]
+    testing.expect_value(t, strings.contains(demo, " := make_command()"), true)
+    testing.expect_value(t, strings.contains(demo, "return forward(kvist_thread_"), true)
+    testing.expect_value(t, strings.contains(demo, "kvist_data_release"), false)
+}
+
+@(test)
 reject_returning_owned_result_from_with_temp_allocator :: proc(t: ^testing.T) {
     source := `(package main)
 (import runtime "base:runtime")
