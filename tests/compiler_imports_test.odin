@@ -1790,6 +1790,107 @@ Value :: struct {
 }
 
 @(test)
+compile_imported_odin_union_case_default_is_exhaustive :: proc(t: ^testing.T) {
+    dir, dir_err := os.make_directory_temp("", "kvist-imported-union-case-*", context.allocator)
+    testing.expect_value(t, dir_err == nil, true)
+    if dir_err != nil {
+        return
+    }
+    defer os.remove_all(dir)
+    defer delete(dir)
+
+    support_dir, support_dir_err := os.join_path({dir, "support"}, context.allocator)
+    testing.expect_value(t, support_dir_err == nil, true)
+    if support_dir_err != nil {
+        return
+    }
+    defer delete(support_dir)
+    testing.expect_value(t, os.make_directory_all(support_dir) == nil, true)
+
+    odin_path, odin_path_err := os.join_path({support_dir, "support.odin"}, context.allocator)
+    testing.expect_value(t, odin_path_err == nil, true)
+    if odin_path_err != nil {
+        return
+    }
+    defer delete(odin_path)
+    odin_source := `package support
+
+Ready :: struct {}
+Failed :: struct {
+    code: int,
+}
+Event :: union {
+    Ready,
+    Failed,
+}
+
+failed_event :: proc() -> Event {
+    return Event(Failed{code = 7})
+}`
+    testing.expect_value(t, os.write_entire_file_from_string(odin_path, odin_source) == nil, true)
+
+    main_path, main_path_err := os.join_path({dir, "main.kvist"}, context.allocator)
+    testing.expect_value(t, main_path_err == nil, true)
+    if main_path_err != nil {
+        return
+    }
+    defer delete(main_path)
+    source := `(package main)
+(import support "support")
+
+(defn label [event: support.Event] -> string
+  (case event
+    (support.Ready _) "ready"
+    "other"))
+
+(defn main []
+  (println (label (support.failed-event))))`
+    testing.expect_value(t, os.write_entire_file_from_string(main_path, source) == nil, true)
+
+    output, err, ok := kvist.compile_path(main_path)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "#partial switch kvist_case_"), true)
+    testing.expect_value(t, strings.contains(output, "case support.Ready:"), true)
+    testing.expect_value(t, strings.contains(output, "case:\n        return \"other\""), true)
+
+    generated_path, generated_path_err := os.join_path({dir, "main.odin"}, context.allocator)
+    testing.expect_value(t, generated_path_err == nil, true)
+    if generated_path_err != nil {
+        return
+    }
+    defer delete(generated_path)
+    testing.expect_value(t, os.write_entire_file_from_string(generated_path, output) == nil, true)
+
+    repo_root := compiler_test_repo_root()
+    state, stdout, stderr, exec_err := os.process_exec(
+        os.Process_Desc{
+            command     = {"odin", "run", dir},
+            working_dir = repo_root,
+        },
+        context.allocator,
+    )
+    defer delete(stdout)
+    defer delete(stderr)
+    testing.expect_value(t, exec_err == nil, true)
+    if exec_err != nil {
+        return
+    }
+    testing.expect_value(t, state.exited, true)
+    testing.expect_value(t, state.exit_code, 0)
+    if state.exit_code != 0 {
+        testing.expect_value(t, string(stderr), "")
+        return
+    }
+    testing.expect_value(t, string(stdout), "other\n")
+}
+
+@(test)
 compile_source_package_rebases_local_odin_import_without_marker :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-source-package-raw-import-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)

@@ -464,11 +464,11 @@ emit_case_type_payload_stmt :: proc(
     e.temp_counter += 1
 
     emit_indent(e)
-    strings.write_string(&e.builder, "switch ")
+    strings.write_string(&e.builder, "#partial switch ")
     strings.write_string(&e.builder, temp)
     strings.write_string(&e.builder, " in ")
     strings.write_string(&e.builder, subject)
-    record_current_line_fragment_map(e, len("switch ") + len(temp) + len(" in "), subject, form.items[1].span)
+    record_current_line_fragment_map(e, len("#partial switch ") + len(temp) + len(" in "), subject, form.items[1].span)
     strings.write_string(&e.builder, " {")
     emit_raw_newline(e)
 

@@ -1419,6 +1419,70 @@ compile_odin_append_accepts_pointer_to_dynamic_array :: proc(t: ^testing.T) {
 }
 
 @(test)
+compile_arr_push_accepts_generic_pointer_to_dynamic_array :: proc(t: ^testing.T) {
+    source := `(package main)
+(import arr "kvist:arr")
+
+(defn push-one! [values: ^[dynamic]$T, value: T]
+  (arr.push! values value))
+
+(defn main []
+  (let [values ([dynamic]int [1 2]) :defer]
+    (push-one! &values 3)
+    (println (count values) (get values 2))))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "push_one_bang :: proc(values: ^[dynamic]$T, value: T)"), true)
+    testing.expect_value(t, strings.contains(output, "append(values, value)"), true)
+    testing.expect_value(t, strings.contains(output, "append(&(values), value)"), false)
+
+    dir, dir_err := os.make_directory_temp("", "kvist-arr-push-pointer-*", context.allocator)
+    testing.expect_value(t, dir_err == nil, true)
+    if dir_err != nil {
+        return
+    }
+    defer os.remove_all(dir)
+    defer delete(dir)
+
+    odin_path, odin_path_err := os.join_path({dir, "main.odin"}, context.allocator)
+    testing.expect_value(t, odin_path_err == nil, true)
+    if odin_path_err != nil {
+        return
+    }
+    defer delete(odin_path)
+    testing.expect_value(t, os.write_entire_file_from_string(odin_path, output) == nil, true)
+
+    repo_root := compiler_test_repo_root()
+    state, stdout, stderr, exec_err := os.process_exec(
+        os.Process_Desc{
+            command     = {"odin", "run", dir},
+            working_dir = repo_root,
+        },
+        context.allocator,
+    )
+    defer delete(stdout)
+    defer delete(stderr)
+    testing.expect_value(t, exec_err == nil, true)
+    if exec_err != nil {
+        return
+    }
+    testing.expect_value(t, state.exited, true)
+    testing.expect_value(t, state.exit_code, 0)
+    if state.exit_code != 0 {
+        testing.expect_value(t, string(stderr), "")
+        return
+    }
+    testing.expect_value(t, string(stdout), "3 3\n")
+}
+
+@(test)
 compile_pointer_to_set_type_constructors :: proc(t: ^testing.T) {
     source := `(package main)
 

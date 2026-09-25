@@ -427,7 +427,7 @@ emit_call_like :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_Error, b
         if !ok_target {
             return "", err_target, false
         }
-        return map_mutation_target_text(e, form.items[1], target), {}, true
+        return mutation_target_text(e, form.items[1], target), {}, true
     }
 
     if head.text == "copy-with" {

@@ -6,7 +6,7 @@
   This mutates the target array and follows Odin dynamic array growth behavior.
   No replacement array is returned."
   [xs & values]
-  `(append (addr ~xs) ~@values))
+  `(append (mut ~xs) ~@values))
 
 (defmacro- field-selector?
   [form]

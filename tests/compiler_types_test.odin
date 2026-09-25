@@ -1270,7 +1270,7 @@ Value :: union {
 }
 
 describe :: proc(value: Value) -> string {
-    switch kvist_case_1 in value {
+    #partial switch kvist_case_1 in value {
     case int:
         return "int"
     case string:

@@ -253,9 +253,14 @@ map_index_target_text :: proc(e: ^Emitter, form: CST_Form, emitted: string) -> s
     return emitted
 }
 
-map_mutation_target_text :: proc(e: ^Emitter, form: CST_Form, emitted: string) -> string {
-    if ty, ok_ty := obvious_form_type(e, form); ok_ty && type_text_is_pointer_to_map(ty) {
-        return emitted
+mutation_target_text :: proc(e: ^Emitter, form: CST_Form, emitted: string) -> string {
+    if ty, ok_ty := obvious_form_type(e, form); ok_ty {
+        if type_text_is_pointer_to_map(ty) || type_text_is_pointer_to_dynamic_array(ty) {
+            return emitted
+        }
+        if type_text_is_dynamic_array(ty) {
+            return addr_expr_text(emitted)
+        }
     }
     return address_of_expr_text(emitted)
 }
