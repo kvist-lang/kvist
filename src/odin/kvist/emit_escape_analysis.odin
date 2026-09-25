@@ -233,7 +233,7 @@ switch_may_escape_deferred_binding :: proc(e: ^Emitter, form: CST_Form, name: st
     return switch_may_escape_deferred_binding_names(e, form, names[:], returns)
 }
 
-form_returns_owned_managed_call_result :: proc(e: ^Emitter, form: CST_Form) -> bool {
+form_returns_independent_owned_call_result :: proc(e: ^Emitter, form: CST_Form) -> bool {
     if e == nil || form.kind != .List || len(form.items) == 0 || form.items[0].kind != .Symbol {
         return false
     }
@@ -241,7 +241,10 @@ form_returns_owned_managed_call_result :: proc(e: ^Emitter, form: CST_Form) -> b
     if !ok_proc || proc_decl == nil || !proc_decl.owns_result {
         return false
     }
-    return proc_decl.returns.kind == .Single &&
+    if proc_decl.returns.kind != .Single {
+        return false
+    }
+    return strings.trim_space(proc_decl.returns.single_ty) == "string" ||
            type_text_has_managed_lifecycle(e, proc_decl.returns.single_ty)
 }
 
@@ -255,10 +258,11 @@ form_escape_deferred_binding_span_names :: proc(e: ^Emitter, form: CST_Form, nam
     if form_is_borrowed_view_of_tracked_name(form, names) {
         return {}, false
     }
-    // An owned managed result has its own retained reference. It remains valid
-    // after a resource passed to the call is cleaned up, so the resource does
-    // not escape through that result.
-    if form_returns_owned_managed_call_result(e, form) {
+    // An owned string has independent backing storage, while an owned managed
+    // result has its own retained or cloned value. Both remain valid after a
+    // resource passed to the call is cleaned up, so that resource does not
+    // escape through the result.
+    if form_returns_independent_owned_call_result(e, form) {
         return {}, false
     }
 

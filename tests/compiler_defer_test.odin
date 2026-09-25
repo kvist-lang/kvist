@@ -556,6 +556,68 @@ compile_defer_binding_passed_as_borrowed_slice_to_copied_result :: proc(t: ^test
 }
 
 @(test)
+compile_defer_string_passed_to_owned_copy_wrapper :: proc(t: ^testing.T) {
+    source := `(package main)
+(import strings "core:strings")
+
+(defstruct Result [
+  text: string
+])
+
+(defn copy-text [text: string] -> string
+  (let [[out err] (strings.clone text)]
+    out))
+
+(defn copy-text-wrapper [text: string] -> string
+  (copy-text text))
+
+(defn copied [] -> Result
+  (let [source (str "hello") :defer
+        text (copy-text source)]
+    (Result :text text)))
+
+(defn copied-direct [] -> Result
+  (let [source (str "hello") :defer]
+    (Result :text (copy-text-wrapper source))))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        defer delete(err.message)
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "defer delete(source)"), true)
+    testing.expect_value(t, strings.contains(output, "text := copy_text(source)"), true)
+    testing.expect_value(t, strings.contains(output, "text = copy_text_wrapper(source)"), true)
+}
+
+@(test)
+reject_defer_string_passed_to_owned_slice_with_borrowed_elements :: proc(t: ^testing.T) {
+    source := `(package main)
+(import strings "core:strings")
+
+(defstruct Parts [
+  values: []string
+])
+
+(defn split-text [text: string] -> []string
+  (strings.split text ","))
+
+(defn split [] -> Parts
+  (let [source (str "hello,world") :defer
+        values (split-text source)]
+    (Parts :values values)))`
+
+    _, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, false)
+    defer delete(err.message)
+    testing.expect_value(t, err.message, "returned value depends on `source`, but `:defer` cleans up `source` when this scope exits, leaving the returned value invalid; return an owned copy, keep the dependent value inside this scope, or remove `:defer` to transfer ownership")
+}
+
+@(test)
 reject_returning_defer_binding_through_local_wrapper :: proc(t: ^testing.T) {
     source := `(package main)
 
