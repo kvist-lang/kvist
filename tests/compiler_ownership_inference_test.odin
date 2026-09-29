@@ -1032,6 +1032,34 @@ compile_warns_for_use_after_ownership_transfer :: proc(t: ^testing.T) {
 }
 
 @(test)
+multi_return_may_read_an_earlier_transferred_result :: proc(t: ^testing.T) {
+    source := `(package main)
+(import arr "kvist:arr")
+
+(defn values-and-valid [] -> [values: [dynamic]int, valid: bool]
+  (let [values (arr.empty int)]
+    (return values (= (count values) 0))))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "return values, (len(values)) == (0)"),
+        true,
+    )
+    testing.expect_value(t, strings.contains(result.output, "defer delete(values)"), false)
+}
+
+@(test)
 compile_warns_for_use_after_transfer_inside_branch :: proc(t: ^testing.T) {
     source := `(package main)
 (import arr "kvist:arr")

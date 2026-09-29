@@ -1435,6 +1435,11 @@ ownership_ir_lower_call :: proc(
                 lowering.emitter,
                 form,
                 item_index+1,
+            ) ||
+            call_arg_transfers_owned_result(
+                lowering.emitter,
+                form,
+                item_index+1,
             )) {
             event_kind = .Transfer
         }
@@ -2162,6 +2167,13 @@ ownership_ir_lower_form :: proc(
             ownership_ir_lower_borrow_escapes(lowering, item, block)
             if item.kind != .Symbol {
                 ownership_ir_lower_value_uses(lowering, item, block)
+            }
+        }
+        // Return operands are all evaluated before their values leave the
+        // procedure. Record their reads first so a value returned in an early
+        // slot may still be used to compute a later slot.
+        for item in form.items[1:] {
+            if item.kind != .Symbol {
                 ownership_ir_add_composite_return_events(
                     lowering,
                     item,

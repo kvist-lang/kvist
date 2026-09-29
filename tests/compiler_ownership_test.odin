@@ -35,6 +35,32 @@ owned_structs_returned_inside_fixed_array_transfer_their_fields :: proc(t: ^test
 }
 
 @(test)
+owned_argument_forwarded_into_struct_result_is_not_cleaned_at_call_site :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+
+(defstruct Projection [values: [dynamic]string])
+
+(defn projection [values: [dynamic]string] -> Projection
+  (Projection :values values))
+
+(defn make-projection [] -> Projection
+  (let [values (make [dynamic]string)]
+    (projection values)))`
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "return projection(values)"), true)
+    testing.expect_value(t, strings.contains(output, "defer delete(values)"), false)
+}
+
+@(test)
 ownership_contract_registry_is_well_formed :: proc(t: ^testing.T) {
     message, ok := kvist.ownership_contracts_validate()
     if !ok {

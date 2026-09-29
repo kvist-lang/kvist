@@ -16,6 +16,6 @@
   (let [name (data.from-string "Ada")
         person (Person :name (data.retain name))
         copy person]
-    (print-person (make-person name))
-    (discard (make-person name))
+    (print-person (make-person (data.retain name)))
+    (discard (make-person (data.retain name)))
     (println (data.string copy.name))))
