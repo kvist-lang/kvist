@@ -564,6 +564,62 @@ macroexpand_user_macros_can_define_recursive_fold :: proc(t: ^testing.T) {
 }
 
 @(test)
+macroexpand_reduce_right_folds_partitioned_forms_iteratively :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defmacro prepend-pair [pair acc]
+  (forms (nth pair 0) (nth pair 1) acc))
+
+(defmacro emit-values []
+  (let [pairs (partition 2 [1 10 2 20 3 30])]
+    (quasiquote
+      (def folded-values
+        [(splice (reduce-right prepend-pair (forms) pairs))]))))
+
+(emit-values)`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(
+        t,
+        strings.contains(
+            output,
+            "folded_values :: [dynamic]int{1, 10, 2, 20, 3, 30}",
+        ),
+        true,
+    )
+}
+
+@(test)
+macroexpand_deep_recursion_reports_a_bounded_error :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defmacro recurse [value]
+  (recurse value))
+
+(recurse 1)`
+
+    _, err, ok := kvist.compile_source(source)
+    defer delete(err.message)
+    testing.expect_value(t, ok, false)
+    testing.expect_value(
+        t,
+        strings.contains(
+            err.message,
+            "macro evaluation exceeded the safe nesting limit",
+        ),
+        true,
+    )
+    testing.expect_value(t, strings.contains(err.message, "use reduce-right"), true)
+}
+
+@(test)
 macroexpand_user_macro_in_file_context :: proc(t: ^testing.T) {
     source := `(package main)
 

@@ -216,6 +216,42 @@ owned_argument_forwarded_into_struct_result_is_not_cleaned_at_call_site :: proc(
 }
 
 @(test)
+owned_local_consumed_through_address_is_not_cleaned_again :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+
+(defn consume-values! [values: ^[dynamic]string]
+  (delete values^))
+
+(defn use [] -> int
+  (let [values (make [dynamic]string)]
+    (consume-values! (addr values))
+    0))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "consume_values_bang(&values)"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(values)"),
+        false,
+    )
+}
+
+@(test)
 ownership_contract_registry_is_well_formed :: proc(t: ^testing.T) {
     message, ok := kvist.ownership_contracts_validate()
     if !ok {

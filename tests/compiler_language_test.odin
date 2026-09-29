@@ -756,6 +756,31 @@ compile_case_with_value_cases :: proc(t: ^testing.T) {
 }
 
 @(test)
+compile_large_case_without_recursive_macro_stack_growth :: proc(t: ^testing.T) {
+    builder := strings.builder_make()
+    defer strings.builder_destroy(&builder)
+    strings.write_string(
+        &builder,
+        "(package main)\n(defn classify [value: int] -> int\n  (case value\n",
+    )
+    for index in 0..<96 {
+        fmt.sbprintf(&builder, "    %d %d\n", index, index*2)
+    }
+    strings.write_string(&builder, "    -1))\n")
+
+    output, err, ok := kvist.compile_source(strings.to_string(builder))
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "== (95)"), true)
+    testing.expect_value(t, strings.contains(output, "return -1"), true)
+}
+
+@(test)
 compile_case_with_repeated_value_cases :: proc(t: ^testing.T) {
     source := `(package main)
 

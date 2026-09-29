@@ -144,6 +144,11 @@ active_macro_call_span: Span
 @(thread_local)
 active_macro_call_span_set: bool
 
+@(thread_local)
+active_macro_expr_depth: int
+
+MACRO_EVAL_SAFE_NESTING_LIMIT :: 160
+
 macro_generated_span :: proc(template_span: Span) -> Span {
     // Quasiquote-authored forms belong to the invocation, not the macro
     // definition. Unquoted and spliced forms bypass this helper and retain
@@ -640,6 +645,122 @@ macro_eval_unary_sequence_call :: proc(operator, item: CST_Form, macros: []User_
     return macro_eval_expr(call, macros, local[:])
 }
 
+macro_eval_binary_sequence_call :: proc(
+    operator, item: CST_Form,
+    accumulator: Macro_Value,
+    macros: []User_Macro,
+    bindings: []Macro_Binding,
+) -> (Macro_Value, Compile_Error, bool) {
+    call := CST_Form{kind = .List, span = item.span}
+    append(&call.items,
+        clone_cst_form(operator),
+        CST_Form{
+            kind = .Symbol,
+            text = strings.clone("__kvist_macro_sequence_item"),
+            span = item.span,
+        },
+        CST_Form{
+            kind = .Symbol,
+            text = strings.clone("__kvist_macro_sequence_accumulator"),
+            span = item.span,
+        },
+    )
+    defer delete_cst_form(&call)
+    local: [dynamic]Macro_Binding
+    defer delete(local)
+    append(&local, ..bindings)
+    append(&local,
+        Macro_Binding{name = "__kvist_macro_sequence_item", value = macro_form_value(item)},
+        Macro_Binding{
+            name = "__kvist_macro_sequence_accumulator",
+            value = macro_value_borrow(accumulator),
+        },
+    )
+    return macro_eval_expr(call, macros, local[:])
+}
+
+macro_eval_reduce_right :: proc(
+    form: CST_Form,
+    macros: []User_Macro,
+    bindings: []Macro_Binding,
+) -> (Macro_Value, Compile_Error, bool) {
+    if len(form.items) != 4 {
+        return Macro_Value{}, Compile_Error{message = "reduce-right expects an operation, initial value, and sequence", span = form.span}, false
+    }
+    accumulator, err_accumulator, ok_accumulator := macro_eval_expr(form.items[2], macros, bindings)
+    if !ok_accumulator {
+        return Macro_Value{}, err_accumulator, false
+    }
+    sequence, err_sequence, ok_sequence := macro_eval_expr(form.items[3], macros, bindings)
+    if !ok_sequence {
+        macro_value_delete_backing(&accumulator)
+        return Macro_Value{}, err_sequence, false
+    }
+    defer macro_value_delete_backing(&sequence)
+    items, err_items, ok_items := macro_list_from_value(sequence, form.items[3].span)
+    if !ok_items {
+        macro_value_delete_backing(&accumulator)
+        return Macro_Value{}, err_items, false
+    }
+    for index := len(items)-1; index >= 0; index -= 1 {
+        next, err_next, ok_next := macro_eval_binary_sequence_call(
+            form.items[1],
+            items[index],
+            accumulator,
+            macros,
+            bindings,
+        )
+        if !ok_next {
+            macro_value_delete_backing(&accumulator)
+            return Macro_Value{}, err_next, false
+        }
+        macro_value_delete_backing(&accumulator)
+        accumulator = next
+    }
+    return accumulator, Compile_Error{}, true
+}
+
+macro_eval_partition :: proc(
+    form: CST_Form,
+    macros: []User_Macro,
+    bindings: []Macro_Binding,
+) -> (Macro_Value, Compile_Error, bool) {
+    if len(form.items) != 3 {
+        return Macro_Value{}, Compile_Error{message = "partition expects a positive size and a sequence", span = form.span}, false
+    }
+    size_value, err_size, ok_size := macro_eval_expr(form.items[1], macros, bindings)
+    if !ok_size {
+        return Macro_Value{}, err_size, false
+    }
+    if size_value.kind != .Int || size_value.int_value <= 0 {
+        macro_value_delete_backing(&size_value)
+        return Macro_Value{}, Compile_Error{message = "partition size must be a positive integer", span = form.items[1].span}, false
+    }
+    size := size_value.int_value
+    macro_value_delete_backing(&size_value)
+    sequence, err_sequence, ok_sequence := macro_eval_expr(form.items[2], macros, bindings)
+    if !ok_sequence {
+        return Macro_Value{}, err_sequence, false
+    }
+    defer macro_value_delete_backing(&sequence)
+    items, err_items, ok_items := macro_list_from_value(sequence, form.items[2].span)
+    if !ok_items {
+        return Macro_Value{}, err_items, false
+    }
+    out: [dynamic]CST_Form
+    for start := 0; start < len(items); start += size {
+        end := min(start+size, len(items))
+        chunk := CST_Form{kind = .Vector, span = form.span}
+        for item in items[start:end] {
+            append(&chunk.items, clone_cst_form(item))
+        }
+        append(&out, chunk)
+    }
+    result := macro_owned_forms_value(out[:])
+    delete(out)
+    return result, Compile_Error{}, true
+}
+
 macro_eval_sequence_helper :: proc(form: CST_Form, macros: []User_Macro, bindings: []Macro_Binding) -> (Macro_Value, Compile_Error, bool) {
     if len(form.items) != 3 {
         return Macro_Value{}, Compile_Error{message = fmt.tprintf("%s expects a unary operation and a sequence", form.items[0].text), span = form.span}, false
@@ -712,6 +833,14 @@ macro_eval_sequence_helper :: proc(form: CST_Form, macros: []User_Macro, binding
 }
 
 macro_eval_expr :: proc(form: CST_Form, macros: []User_Macro, bindings: []Macro_Binding) -> (Macro_Value, Compile_Error, bool) {
+    active_macro_expr_depth += 1
+    defer active_macro_expr_depth -= 1
+    if active_macro_expr_depth > MACRO_EVAL_SAFE_NESTING_LIMIT {
+        return Macro_Value{}, Compile_Error{
+            message = "macro evaluation exceeded the safe nesting limit; use reduce-right or another iterative sequence helper instead of deep recursion",
+            span = form.span,
+        }, false
+    }
     #partial switch form.kind {
     case .Nil:
         return macro_nil_value(), Compile_Error{}, true
@@ -1391,6 +1520,10 @@ macro_eval_expr :: proc(form: CST_Form, macros: []User_Macro, bindings: []Macro_
                 return macro_eval_contains_expr(form, macros, bindings)
             case "map", "filter", "some?", "every?":
                 return macro_eval_sequence_helper(form, macros, bindings)
+            case "reduce-right":
+                return macro_eval_reduce_right(form, macros, bindings)
+            case "partition":
+                return macro_eval_partition(form, macros, bindings)
             case "form?":
                 if len(form.items) != 2 {
                     return Macro_Value{}, Compile_Error{message = "form? expects one argument", span = form.span}, false

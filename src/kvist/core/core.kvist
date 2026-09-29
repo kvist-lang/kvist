@@ -590,25 +590,38 @@
       (nth clauses 1)
       (case-type-switch-clauses binding (rest (rest clauses))))))
 
+(defmacro- case-value-step
+  [pair state]
+  (let [target (nth state 0)
+        fallback (nth state 1)]
+    (vector
+      target
+      `(if (= ~target ~(nth pair 0))
+         ~(nth pair 1)
+         ~fallback))))
+
+(defmacro- case-value-pair-type?
+  [pair]
+  (list? (first pair)))
+
 (defmacro- case-value-chain
   [target clauses]
-  (cond
-    (= (count clauses) 0)
-    (error "case expects subject, clause/body pairs, and default")
-
-    (= (count clauses) 1)
-    (first clauses)
-
-    (= (count clauses) 2)
-    (error "case expects clause/body pairs followed by default")
-
-    (list? (first clauses))
-    (error "type-case expects (Type binding)")
-
-    :else
-    `(if (= ~target ~(first clauses))
-       ~(nth clauses 1)
-       ~(case-value-chain target (rest (rest clauses))))))
+  (let [clause-count (count clauses)]
+    (if (= clause-count 0)
+      (error "case expects subject, clause/body pairs, and default")
+      (if (= clause-count 1)
+        (first clauses)
+        (if (= clause-count 2)
+          (error "case expects clause/body pairs followed by default")
+          (let [default-index (- clause-count 1)
+                pairs (partition 2 (slice clauses 0 default-index))]
+            (if (some? case-value-pair-type? pairs)
+              (error "type-case expects (Type binding)")
+              (let [state (reduce-right
+                          case-value-step
+                          (vector target (nth clauses default-index))
+                          pairs)]
+                (nth state 1)))))))))
 
 (defmacro case
   "Dispatch on `value` using value cases or type payload cases.

@@ -1348,6 +1348,11 @@ ownership_ir_lower_call :: proc(
                 lowering,
                 arg.text,
             )
+        } else if arg.kind == .List {
+            _, has_tracked_arg = ownership_ir_deferred_cleanup_arg_place(
+                lowering,
+                arg,
+            )
         } else if arg.kind == .Brace {
             for pair_index := 1;
                 pair_index < len(arg.items);
@@ -1502,6 +1507,59 @@ ownership_ir_lower_call :: proc(
             continue
         }
         if item.kind == .List {
+            if place, found := ownership_ir_deferred_cleanup_arg_place(
+                lowering,
+                item,
+            ); found {
+                root, ok_root := ownership_ir_cleanup_arg_root_name(item)
+                if ok_root {
+                    ownership_ir_lower_borrow_use(
+                        lowering,
+                        root,
+                        block,
+                        item.span,
+                    )
+                    delete(root)
+                }
+                event_kind := Ownership_IR_Event_Kind.Borrow
+                parameter_index, ok_parameter :=
+                    ownership_ir_call_parameter_index(
+                        called_proc,
+                        args,
+                        named_start,
+                        item_index,
+                    )
+                consumes := ok_called_proc && called_proc != nil &&
+                            ok_parameter &&
+                            procedure_ownership_contract_consumes(
+                                &called_contract,
+                                parameter_index,
+                            )
+                if consumes {
+                    event_kind = .Destroy if cleanup_call_head(head) else .Transfer
+                }
+                if event_kind == .Borrow {
+                    for shadow_place in lowering.result.places {
+                        if shadow_place.place == place &&
+                           (shadow_place.cleanup_head == head ||
+                            (shadow_place.diagnose_unreleased &&
+                             cleanup_call_head(head))) {
+                            event_kind = .Destroy
+                            break
+                        }
+                    }
+                }
+                _ = ownership_ir_add_event(
+                    &lowering.result.graph,
+                    block,
+                    {
+                        kind = event_kind,
+                        place = place,
+                        span = item.span,
+                    },
+                )
+                continue
+            }
             ownership_ir_lower_call(lowering, item, block)
             continue
         }
