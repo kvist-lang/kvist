@@ -933,7 +933,11 @@ ownership_ir_add_struct_field_place :: proc(
     }
     place_name := fmt.tprintf("%s.%s", binding.name, field.name)
     aggregate_return_transfers_owner :=
-        aggregate_result_body_returns_name(body, binding.name) &&
+        aggregate_result_body_transfers_name(
+            lowering.emitter,
+            body,
+            binding.name,
+        ) &&
         !aggregate_result_body_before_return_use_is_unsafe(
             lowering.emitter,
             body,
@@ -1000,6 +1004,39 @@ ownership_ir_add_aggregate_return_events :: proc(
             {kind = .Return, place = binding.place, span = span},
         )
         append(&emitted, binding.place)
+    }
+}
+
+ownership_ir_add_composite_return_events :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    form: CST_Form,
+    block: int,
+) {
+    if form.kind == .Symbol {
+        ownership_ir_add_aggregate_return_events(
+            lowering,
+            form.text,
+            block,
+            form.span,
+        )
+        if place, found := ownership_ir_lookup_name(lowering, form.text); found {
+            _ = ownership_ir_add_event(
+                &lowering.result.graph,
+                block,
+                {kind = .Return, place = place, span = form.span},
+            )
+        }
+        return
+    }
+    if form.kind == .Vector || form.kind == .Set {
+        for item in form.items {
+            ownership_ir_add_composite_return_events(
+                lowering,
+                item,
+                block,
+            )
+        }
+        return
     }
 }
 
@@ -1972,6 +2009,7 @@ ownership_ir_lower_form :: proc(
     if form.kind != .List || len(form.items) == 0 || form.items[0].kind != .Symbol {
         if can_transfer {
             ownership_ir_lower_borrow_escapes(lowering, form, block)
+            ownership_ir_add_composite_return_events(lowering, form, block)
         } else {
             ownership_ir_lower_discarded_result(lowering, form, block)
         }
@@ -2124,6 +2162,11 @@ ownership_ir_lower_form :: proc(
             ownership_ir_lower_borrow_escapes(lowering, item, block)
             if item.kind != .Symbol {
                 ownership_ir_lower_value_uses(lowering, item, block)
+                ownership_ir_add_composite_return_events(
+                    lowering,
+                    item,
+                    block,
+                )
                 continue
             }
             ownership_ir_add_aggregate_return_events(

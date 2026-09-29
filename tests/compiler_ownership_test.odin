@@ -9,6 +9,32 @@ import "core:testing"
 import kvist "../src/odin/kvist"
 
 @(test)
+owned_structs_returned_inside_fixed_array_transfer_their_fields :: proc(t: ^testing.T) {
+    source := `(package app)
+
+(defstruct Box [items: [dynamic]int])
+
+(defn make-box [value: int] -> Box
+  (Box :items ([dynamic]int [value])))
+
+(defn make-pair [] -> [2]Box
+  (let [left (make-box 1)
+        right (make-box 2)]
+    [left right]))`
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "return [2]Box{left, right}"), true)
+    testing.expect_value(t, strings.contains(output, "defer delete(left.items)"), false)
+    testing.expect_value(t, strings.contains(output, "defer delete(right.items)"), false)
+}
+
+@(test)
 ownership_contract_registry_is_well_formed :: proc(t: ^testing.T) {
     message, ok := kvist.ownership_contracts_validate()
     if !ok {

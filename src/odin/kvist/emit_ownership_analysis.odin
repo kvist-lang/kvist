@@ -681,6 +681,19 @@ aggregate_result_tail_context_use_is_unsafe :: proc(
     if depth > 16 || form.kind == .Symbol {
         return false
     }
+    if form.kind == .Vector || form.kind == .Set {
+        for item in form.items {
+            if aggregate_result_tail_context_use_is_unsafe(
+                e,
+                item,
+                name,
+                depth+1,
+            ) {
+                return true
+            }
+        }
+        return false
+    }
     if form.kind != .List || len(form.items) == 0 ||
        form.items[0].kind != .Symbol {
         return aggregate_result_name_use_is_unsafe(e, form, name)
@@ -909,6 +922,19 @@ aggregate_result_body_returns_name :: proc(
 ) -> bool {
     return len(body) > 0 &&
            aggregate_result_form_returns_name(body[len(body)-1], name)
+}
+
+aggregate_result_body_transfers_name :: proc(
+    e: ^Emitter,
+    body: []CST_Form,
+    name: string,
+) -> bool {
+    if len(body) == 0 {
+        return false
+    }
+    tail := body[len(body)-1]
+    return form_transfers_owned_name(e, tail, name, true) ||
+           composite_value_transfers_owned_name(e, tail, name)
 }
 
 proc_single_struct_return :: proc(
