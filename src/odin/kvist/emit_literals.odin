@@ -1214,6 +1214,14 @@ qualify_imported_odin_type :: proc(alias, type_text: string) -> string {
         defer delete(inner)
         return fmt.tprintf("^%s", inner)
     }
+    if strings.has_prefix(text, "[") {
+        close := strings.index(text, "]")
+        if close > 0 && close+1 < len(text) {
+            inner := qualify_imported_odin_type(alias, text[close+1:])
+            defer delete(inner)
+            return fmt.tprintf("%s%s", text[:close+1], inner)
+        }
+    }
     if proc_type, ok_proc := qualify_imported_odin_proc_type(alias, text); ok_proc {
         return proc_type
     }

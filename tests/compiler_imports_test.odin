@@ -510,6 +510,79 @@ compile_imported_odin_struct_constructor_uses_field_type_context :: proc(t: ^tes
 }
 
 @(test)
+compile_imported_odin_struct_moves_qualified_dynamic_array_field :: proc(t: ^testing.T) {
+    dir, dir_err := os.make_directory_temp("", "kvist-imported-array-field-*", context.allocator)
+    testing.expect_value(t, dir_err == nil, true)
+    if dir_err != nil {
+        return
+    }
+    defer os.remove_all(dir)
+    defer delete(dir)
+
+    support_dir, support_dir_err := os.join_path({dir, "support"}, context.allocator)
+    testing.expect_value(t, support_dir_err == nil, true)
+    if support_dir_err != nil {
+        return
+    }
+    defer delete(support_dir)
+    testing.expect_value(t, os.make_directory_all(support_dir) == nil, true)
+
+    support_path, support_path_err := os.join_path({support_dir, "support.odin"}, context.allocator)
+    testing.expect_value(t, support_path_err == nil, true)
+    if support_path_err != nil {
+        return
+    }
+    defer delete(support_path)
+    support_source := `package support
+
+Item :: struct { value: int }
+Envelope :: struct { items: [dynamic]Item }
+`
+    testing.expect_value(
+        t,
+        os.write_entire_file_from_string(support_path, support_source) == nil,
+        true,
+    )
+
+    main_path, main_path_err := os.join_path({dir, "main.kvist"}, context.allocator)
+    testing.expect_value(t, main_path_err == nil, true)
+    if main_path_err != nil {
+        return
+    }
+    defer delete(main_path)
+    source := `(package main)
+(import support "support")
+
+(defn envelope [] -> support.Envelope
+  (let [items (make [dynamic]support.Item)]
+    (append (addr items) (support.Item :value 1))
+    (support.Envelope :items items)))`
+    testing.expect_value(
+        t,
+        os.write_entire_file_from_string(main_path, source) == nil,
+        true,
+    )
+
+    output, err, ok := kvist.compile_path(main_path)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+    testing.expect_value(
+        t,
+        strings.contains(output, "kvist_value: [dynamic]support.Item"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(output, "-> [dynamic]support.Item"),
+        true,
+    )
+}
+
+@(test)
 compile_leaves_unimported_arr_count_and_constructors_unresolved :: proc(t: ^testing.T) {
     cases := []struct {
         source:   string,
