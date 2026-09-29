@@ -35,6 +35,17 @@ emit_ownership_plan_diagnostics :: proc(
                 .Ownership_Automatic_Cleanup_Skipped,
                 .Conservative,
             )
+        case .Explicit_Aggregate_Cleanup_Conditional:
+            emit_coded_warning(
+                e,
+                fmt.tprintf(
+                    "explicit cleanup of aggregate field `%s` is path-dependent; automatic cleanup was disabled to avoid double-free, so ensure the cleanup procedure releases the field on every return path",
+                    diagnostic.subject,
+                ),
+                diagnostic.span,
+                .Ownership_Automatic_Cleanup_Skipped,
+                .Conservative,
+            )
         case .Automatic_Cleanup_Skipped:
             reason := ownership_cleanup_skip_reason_text(
                 diagnostic.reason,

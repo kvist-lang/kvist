@@ -1150,6 +1150,176 @@ ownership_ir_bind_aggregate_alias :: proc(
     }
 }
 
+ownership_ir_cleanup_arg_root_name :: proc(
+    form: CST_Form,
+) -> (string, bool) {
+    if form.kind == .Symbol {
+        root := form.text
+        if len(root) > 0 && root[len(root)-1] == '^' {
+            root = root[:len(root)-1]
+        }
+        return map_name(root), true
+    }
+    if form.kind != .List || len(form.items) != 2 ||
+       form.items[0].kind != .Symbol ||
+       (form.items[0].text != "addr" && form.items[0].text != "deref") {
+        return "", false
+    }
+    return ownership_ir_cleanup_arg_root_name(form.items[1])
+}
+
+ownership_ir_has_aggregate_root :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    root: string,
+) -> bool {
+    for place in lowering.result.places {
+        if place.aggregate_root == root {
+            return true
+        }
+    }
+    return false
+}
+
+ownership_ir_call_has_tracked_aggregate_arg :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    form: CST_Form,
+) -> bool {
+    for item in form.items[1:] {
+        root, ok_root := ownership_ir_cleanup_arg_root_name(item)
+        if !ok_root {
+            continue
+        }
+        found := ownership_ir_has_aggregate_root(lowering, root)
+        delete(root)
+        if found {
+            return true
+        }
+    }
+    return false
+}
+
+ownership_ir_call_parameter_index :: proc(
+    decl: ^Proc_Decl,
+    args: []CST_Form,
+    named_start, arg_index: int,
+) -> (int, bool) {
+    if decl == nil || arg_index < 0 || arg_index >= len(args) {
+        return -1, false
+    }
+    if named_start < 0 || arg_index < named_start {
+        if arg_index < len(decl.params) {
+            return arg_index, true
+        }
+        return -1, false
+    }
+    named_offset := arg_index-named_start
+    if named_offset%2 == 0 || arg_index == 0 {
+        return -1, false
+    }
+    parameter_name, ok_name := brace_key_name(args[arg_index-1])
+    if !ok_name {
+        return -1, false
+    }
+    for parameter, parameter_index in decl.params {
+        if parameter.name == parameter_name {
+            return parameter_index, true
+        }
+    }
+    return -1, false
+}
+
+ownership_ir_append_conditional_aggregate_cleanup_diagnostic :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    subject: string,
+    span: Span,
+) {
+    for diagnostic in lowering.result.diagnostic_candidates {
+        if diagnostic.kind == .Explicit_Aggregate_Cleanup_Conditional &&
+           diagnostic.subject == subject && diagnostic.span == span {
+            return
+        }
+    }
+    append(
+        &lowering.result.diagnostic_candidates,
+        Ownership_IR_Diagnostic_Fact{
+            kind = .Explicit_Aggregate_Cleanup_Conditional,
+            certainty = .Conservative,
+            subject = strings.clone(subject),
+            span = span,
+        },
+    )
+}
+
+ownership_ir_add_aggregate_cleanup_events :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    form: CST_Form,
+    called_proc: ^Proc_Decl,
+    block: int,
+    kind: Ownership_IR_Event_Kind,
+    conditional := false,
+) {
+    if called_proc == nil ||
+       (kind != .Destroy && kind != .Schedule_Destroy) {
+        return
+    }
+    args := form.items[1:]
+    named_start := first_keyword_arg_tail_start(args)
+    for item, arg_index in args {
+        parameter_index, ok_parameter := ownership_ir_call_parameter_index(
+            called_proc,
+            args,
+            named_start,
+            arg_index,
+        )
+        if !ok_parameter {
+            continue
+        }
+        root, ok_root := ownership_ir_cleanup_arg_root_name(item)
+        if !ok_root {
+            continue
+        }
+        prefix := fmt.tprintf("%s.", root)
+        for place in lowering.result.places {
+            if place.aggregate_root != root ||
+               !strings.has_prefix(place.name, prefix) {
+                continue
+            }
+            field_name := place.name[len(prefix):]
+            if strings.contains(field_name, ".") ||
+               !procedure_may_clean_parameter_field(
+                   called_proc,
+                   parameter_index,
+                   field_name,
+               ) {
+                continue
+            }
+            if !procedure_definitely_cleans_parameter_field(
+                called_proc,
+                parameter_index,
+                field_name,
+            ) {
+                ownership_ir_append_conditional_aggregate_cleanup_diagnostic(
+                    lowering,
+                    place.name,
+                    item.span,
+                )
+            }
+            _ = ownership_ir_add_event(
+                &lowering.result.graph,
+                block,
+                {
+                    kind = kind,
+                    place = place.place,
+                    conditional = conditional,
+                    span = item.span,
+                },
+            )
+        }
+        delete(prefix)
+        delete(root)
+    }
+}
+
 ownership_ir_lower_call :: proc(
     lowering: ^Ownership_IR_Lowering,
     form: CST_Form,
@@ -1198,6 +1368,12 @@ ownership_ir_lower_call :: proc(
             break
         }
     }
+    if !has_tracked_arg {
+        has_tracked_arg = ownership_ir_call_has_tracked_aggregate_arg(
+            lowering,
+            form,
+        )
+    }
     called_proc: ^Proc_Decl
     ok_called_proc := false
     if has_tracked_arg && !struct_constructor {
@@ -1211,6 +1387,13 @@ ownership_ir_lower_call :: proc(
         called_contract = procedure_ownership_contract(
             called_proc,
             lowering.emitter,
+        )
+        ownership_ir_add_aggregate_cleanup_events(
+            lowering,
+            form,
+            called_proc,
+            block,
+            .Destroy,
         )
     }
     defer procedure_ownership_contract_delete(&called_contract)
@@ -1591,6 +1774,19 @@ ownership_ir_schedule_deferred_form :: proc(
 
     head := map_name(raw_head)
     defer delete(head)
+    if _, called_proc, ok_called_proc := resolve_proc_call_decl(
+        lowering.emitter,
+        raw_head,
+    ); ok_called_proc && called_proc != nil {
+        ownership_ir_add_aggregate_cleanup_events(
+            lowering,
+            form,
+            called_proc,
+            block,
+            .Schedule_Destroy,
+            conditional,
+        )
+    }
     for item in form.items[1:] {
         place, found := ownership_ir_deferred_cleanup_arg_place(
             lowering,

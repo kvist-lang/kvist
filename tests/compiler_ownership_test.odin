@@ -9,6 +9,161 @@ import "core:testing"
 import kvist "../src/odin/kvist"
 
 @(test)
+data_stored_in_data_aggregate_is_cleaned_after_the_aggregate_retains_it :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import data "kvist:data")
+
+(defn section [] -> Data
+  (let [content: Data [:div "content"]
+        result: Data [:section content]]
+    result))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "kvist_data_release(kvist_place^)"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "(&content,"),
+        true,
+    )
+}
+
+@(test)
+explicit_aggregate_destructor_covers_inferred_owned_fields :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import fmt "core:fmt")
+
+(defstruct State [manual: string automatic: string])
+
+(defn make-state [] -> State
+  (State
+    :manual (fmt.aprintf "manual=%d" 42)
+    :automatic (fmt.aprintf "automatic=%d" 42)))
+
+(defn delete-state! [state: ^State]
+  (delete state^.manual))
+
+(defn deferred-cleanup [] -> int
+  (let [deferred-state (make-state)]
+    (defer (delete-state! (addr deferred-state)))
+    (count deferred-state.manual)))
+
+(defn direct-cleanup []
+  (let [direct-state (make-state)]
+    (delete-state! (addr direct-state))))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(deferred_state.manual)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(direct_state.manual)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(deferred_state.automatic)"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(direct_state.automatic)"),
+        true,
+    )
+}
+
+@(test)
+path_dependent_aggregate_destructor_takes_precedence_and_warns :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import fmt "core:fmt")
+
+(defstruct State [manual: string automatic: string])
+
+(defn make-state [] -> State
+  (State
+    :manual (fmt.aprintf "manual=%d" 42)
+    :automatic (fmt.aprintf "automatic=%d" 42)))
+
+(defn maybe-delete-state! [state: ^State cleanup?: bool]
+  (if cleanup?
+    (delete state^.manual)
+    nil))
+
+(defn use [] -> int
+  (let [state (make-state)]
+    (defer (maybe-delete-state! (addr state) true))
+    (count state.manual)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(state.manual)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(state.automatic)"),
+        true,
+    )
+    testing.expect_value(t, len(result.warnings), 1)
+    if len(result.warnings) == 1 {
+        testing.expect_value(
+            t,
+            result.warnings[0].message,
+            "explicit cleanup of aggregate field `state.manual` is path-dependent; automatic cleanup was disabled to avoid double-free, so ensure the cleanup procedure releases the field on every return path",
+        )
+        testing.expect_value(
+            t,
+            result.warnings[0].code,
+            kvist.Compile_Warning_Code.Ownership_Automatic_Cleanup_Skipped,
+        )
+        testing.expect_value(
+            t,
+            result.warnings[0].confidence,
+            kvist.Compile_Warning_Confidence.Conservative,
+        )
+    }
+}
+
+@(test)
 owned_structs_returned_inside_fixed_array_transfer_their_fields :: proc(t: ^testing.T) {
     source := `(package app)
 

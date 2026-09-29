@@ -142,6 +142,196 @@ cleanup_arg_names_value :: proc(form: CST_Form, name: string) -> bool {
     return false
 }
 
+cleanup_arg_names_direct_field :: proc(
+    form: CST_Form,
+    parameter_name, field_name: string,
+) -> bool {
+    target, fields, _, ok := field_path_place_parts(form)
+    defer delete(fields)
+    if !ok || len(fields) != 1 || target.kind != .Symbol {
+        return false
+    }
+    root := target.text
+    if len(root) > 0 && root[len(root)-1] == '^' {
+        root = root[:len(root)-1]
+    }
+    mapped_root := map_name(root)
+    defer delete(mapped_root)
+    mapped_parameter := map_name(parameter_name)
+    defer delete(mapped_parameter)
+    return mapped_root == mapped_parameter && fields[0] == field_name
+}
+
+form_may_clean_parameter_field :: proc(
+    form: CST_Form,
+    parameter_name, field_name: string,
+    depth: int = 0,
+) -> bool {
+    if depth > 32 || form.kind != .List || len(form.items) == 0 ||
+       form.items[0].kind != .Symbol {
+        return false
+    }
+    head := form.items[0].text
+    if head == "fn" || head == "quote" || head == "quasiquote" {
+        return false
+    }
+    if head == "delete" || cleanup_call_head(head) {
+        for item in form.items[1:] {
+            if cleanup_arg_names_direct_field(
+                item,
+                parameter_name,
+                field_name,
+            ) {
+                return true
+            }
+        }
+    }
+    for item in form.items[1:] {
+        if form_may_clean_parameter_field(
+            item,
+            parameter_name,
+            field_name,
+            depth+1,
+        ) {
+            return true
+        }
+    }
+    return false
+}
+
+form_definitely_cleans_parameter_field :: proc(
+    form: CST_Form,
+    parameter_name, field_name: string,
+) -> bool {
+    head, ok_head := form_head_symbol_text(form)
+    if !ok_head {
+        return false
+    }
+    if head == "delete" || cleanup_call_head(head) {
+        for item in form.items[1:] {
+            if cleanup_arg_names_direct_field(
+                item,
+                parameter_name,
+                field_name,
+            ) {
+                return true
+            }
+        }
+    }
+    switch head {
+    case "defer":
+        return forms_definitely_clean_parameter_field(
+            form.items[1:],
+            parameter_name,
+            field_name,
+        )
+    case "do", "block":
+        return forms_definitely_clean_parameter_field(
+            form.items[1:],
+            parameter_name,
+            field_name,
+        )
+    case "if":
+        if len(form.items) != 4 {
+            return false
+        }
+        return form_definitely_cleans_parameter_field(
+                   form.items[2],
+                   parameter_name,
+                   field_name,
+               ) &&
+               form_definitely_cleans_parameter_field(
+                   form.items[3],
+                   parameter_name,
+                   field_name,
+               )
+    case "let":
+        if len(form.items) < 3 {
+            return false
+        }
+        bindings, _, ok_bindings := parse_let_bindings(form.items[1])
+        if !ok_bindings {
+            return false
+        }
+        defer delete(bindings)
+        for binding in bindings {
+            if form_definitely_cleans_parameter_field(
+                binding.value,
+                parameter_name,
+                field_name,
+            ) {
+                return true
+            }
+            if form_contains_explicit_return(binding.value) {
+                return false
+            }
+        }
+        return forms_definitely_clean_parameter_field(
+            form.items[2:],
+            parameter_name,
+            field_name,
+        )
+    }
+    return false
+}
+
+forms_definitely_clean_parameter_field :: proc(
+    forms: []CST_Form,
+    parameter_name, field_name: string,
+) -> bool {
+    for form in forms {
+        if form_definitely_cleans_parameter_field(
+            form,
+            parameter_name,
+            field_name,
+        ) {
+            return true
+        }
+        if form_contains_explicit_return(form) {
+            return false
+        }
+    }
+    return false
+}
+
+procedure_definitely_cleans_parameter_field :: proc(
+    decl: ^Proc_Decl,
+    parameter_index: int,
+    field_name: string,
+) -> bool {
+    if decl == nil || parameter_index < 0 ||
+       parameter_index >= len(decl.params) || field_name == "" {
+        return false
+    }
+    return forms_definitely_clean_parameter_field(
+        decl.body[:],
+        decl.params[parameter_index].name,
+        field_name,
+    )
+}
+
+procedure_may_clean_parameter_field :: proc(
+    decl: ^Proc_Decl,
+    parameter_index: int,
+    field_name: string,
+) -> bool {
+    if decl == nil || parameter_index < 0 ||
+       parameter_index >= len(decl.params) || field_name == "" {
+        return false
+    }
+    parameter_name := decl.params[parameter_index].name
+    for form in decl.body {
+        if form_may_clean_parameter_field(
+            form,
+            parameter_name,
+            field_name,
+        ) {
+            return true
+        }
+    }
+    return false
+}
+
 form_is_delete_of_name :: proc(form: CST_Form, name: string) -> bool {
     head, ok := form_head_symbol_text(form)
     if !ok {

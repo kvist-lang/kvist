@@ -9,6 +9,133 @@ import "core:testing"
 import kvist "../src/odin/kvist"
 
 @(test)
+imported_explicit_aggregate_destructor_covers_owned_result_fields :: proc(
+    t: ^testing.T,
+) {
+    dir, dir_err := os.make_directory_temp(
+        "",
+        "kvist-package-explicit-aggregate-cleanup-*",
+        context.allocator,
+    )
+    testing.expect_value(t, dir_err == nil, true)
+    if dir_err != nil do return
+    defer os.remove_all(dir)
+    defer delete(dir)
+
+    support_dir, support_dir_err := os.join_path(
+        {dir, "support"},
+        context.allocator,
+    )
+    support_path, support_path_err := os.join_path(
+        {support_dir, "support.kvist"},
+        context.allocator,
+    )
+    main_path, main_path_err := os.join_path(
+        {dir, "main.kvist"},
+        context.allocator,
+    )
+    cache_dir, cache_dir_err := os.join_path(
+        {dir, "cache"},
+        context.allocator,
+    )
+    testing.expect_value(
+        t,
+        support_dir_err == nil && support_path_err == nil &&
+        main_path_err == nil && cache_dir_err == nil,
+        true,
+    )
+    if support_dir_err != nil || support_path_err != nil ||
+       main_path_err != nil || cache_dir_err != nil {
+        delete(support_dir)
+        delete(support_path)
+        delete(main_path)
+        delete(cache_dir)
+        return
+    }
+    defer delete(support_dir)
+    defer delete(support_path)
+    defer delete(main_path)
+    defer delete(cache_dir)
+    testing.expect_value(t, os.make_directory_all(support_dir) == nil, true)
+    testing.expect_value(t, os.make_directory_all(cache_dir) == nil, true)
+
+    support_source := `(package support)
+(import fmt "core:fmt")
+
+(defstruct State [manual: string automatic: string])
+
+(defn make-state [] -> State
+  (State
+    :manual (fmt.aprintf "manual=%d" 42)
+    :automatic (fmt.aprintf "automatic=%d" 42)))
+
+(defn delete-state! [state: ^State]
+  (delete state^.manual))`
+    main_source := `(package main)
+(import support "support")
+
+(defn use [] -> int
+  (let [state (support.make-state)]
+    (defer (support.delete-state! (addr state)))
+    (count state.manual)))`
+    testing.expect_value(
+        t,
+        os.write_entire_file_from_string(support_path, support_source) == nil,
+        true,
+    )
+    testing.expect_value(
+        t,
+        os.write_entire_file_from_string(main_path, main_source) == nil,
+        true,
+    )
+
+    result, err, ok := kvist.compile_path_with_package_artifacts(
+        main_path,
+        cache_dir = cache_dir,
+    )
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    testing.expect_value(t, len(result.root.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(result.root.output, "defer delete(state.manual)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.root.output, "defer delete(state.automatic)"),
+        true,
+    )
+    kvist.package_emit_result_delete(&result)
+
+    cached, cached_err, cached_ok :=
+        kvist.compile_path_with_package_artifacts(
+            main_path,
+            cache_dir = cache_dir,
+        )
+    testing.expect_value(t, cached_ok, true)
+    if !cached_ok {
+        testing.expect_value(t, cached_err.message, "")
+        return
+    }
+    defer kvist.package_emit_result_delete(&cached)
+    testing.expect_value(t, cached.packages_reused > 0, true)
+    testing.expect_value(
+        t,
+        strings.contains(cached.root.output, "defer delete(state.manual)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(cached.root.output, "defer delete(state.automatic)"),
+        true,
+    )
+}
+
+@(test)
 compile_path_emits_imported_package_artifacts :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-package-artifacts-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)

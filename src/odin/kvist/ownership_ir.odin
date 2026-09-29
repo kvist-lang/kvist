@@ -139,6 +139,7 @@ Ownership_IR_Automatic_Cleanup :: enum {
 
 Ownership_IR_Diagnostic_Kind :: enum {
     Aggregate_Result_Fields_Uncertain,
+    Explicit_Aggregate_Cleanup_Conditional,
     Automatic_Cleanup_Skipped,
     Use_After_Transfer,
     Overwrite_Before_Cleanup,
