@@ -161,6 +161,7 @@ symbols_append_source_package_records :: proc(builder: ^strings.Builder, seen: ^
         }
         line_text := fields[2]
         column_text := fields[3]
+        source_detail := fields[4]
         signature := fields[5]
         doc := fields[6]
         kind_text := kind
@@ -170,7 +171,22 @@ symbols_append_source_package_records :: proc(builder: ^strings.Builder, seen: ^
         dot_name := fmt.tprintf("%s.%s", alias, name)
         if !seen[dot_name] {
             seen[dot_name] = true
-            fmt.sbprintf(builder, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", kind_text, dot_name, line_text, column_text, import_path, signature, doc, package_file)
+            detail := import_path
+            if source_detail != "" {
+                detail = fmt.tprintf("%s;%s", import_path, source_detail)
+            }
+            fmt.sbprintf(
+                builder,
+                "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+                kind_text,
+                dot_name,
+                line_text,
+                column_text,
+                detail,
+                signature,
+                doc,
+                package_file,
+            )
         }
         delete(fields)
     }
@@ -233,9 +249,15 @@ symbols_append_resolved_source_import_records :: proc(
 
     anchor := source_package_anchor_file(files[:])
     symbols_append_source_package_import_record(builder, seen, alias, import_path, anchor)
+    analyzed_decls := symbols_analyzed_package_decls(files[:])
+    defer delete(analyzed_decls)
     for file in files {
         context.allocator = result_allocator
-        package_output, package_err, ok_package_output := symbols_source(file.source)
+        package_output, package_err, ok_package_output := symbols_source(
+            file.source,
+            file.path,
+            analyzed_decls[:],
+        )
         context.allocator = context.temp_allocator
         if !ok_package_output {
             return package_err, false
@@ -397,9 +419,15 @@ source_package_symbols_source :: proc(importer_path, import_path: string) -> (pa
     strings.write_string(&builder, "kind\tname\tline\tcolumn\tdetail\tsignature\tdoc\tfile\n")
     seen := make(map[string]bool)
     defer delete(seen)
+    analyzed_decls := symbols_analyzed_package_decls(files[:])
+    defer delete(analyzed_decls)
     for file in files {
         context.allocator = result_allocator
-        package_output, package_err, ok_package_output := symbols_source(file.source)
+        package_output, package_err, ok_package_output := symbols_source(
+            file.source,
+            file.path,
+            analyzed_decls[:],
+        )
         context.allocator = context.temp_allocator
         if !ok_package_output {
             return "", "", clone_compile_error(package_err, result_allocator), false
@@ -731,9 +759,15 @@ editor_symbols_source :: proc(path, source: string) -> (output: string, err: Com
     files_for_imports: [dynamic]Package_File
     defer delete(files_for_imports)
     if ok_package_files {
+        analyzed_decls := symbols_analyzed_package_decls(package_files[:])
+        defer delete(analyzed_decls)
         for file in package_files {
             context.allocator = result_allocator
-            local_output, local_err, ok_local := symbols_source(file.source)
+            local_output, local_err, ok_local := symbols_source(
+                file.source,
+                file.path,
+                analyzed_decls[:],
+            )
             context.allocator = context.temp_allocator
             if !ok_local {
                 return "", local_err, false
@@ -820,6 +854,11 @@ editor_symbols_source :: proc(path, source: string) -> (output: string, err: Com
 
 package_symbols_source :: proc(import_path, alias: string, package_kind: string = "") -> (output: string, ok: bool) {
     result_allocator := context.allocator
+    old_allocator := context.allocator
+    temp_scope := runtime.default_temp_allocator_temp_begin()
+    defer runtime.default_temp_allocator_temp_end(temp_scope)
+    context.allocator = context.temp_allocator
+    defer context.allocator = old_allocator
 
     resolved_alias := alias
     if resolved_alias == "" {
@@ -850,14 +889,24 @@ package_symbols_source :: proc(import_path, alias: string, package_kind: string 
     }
     seen := make(map[string]bool)
     defer delete(seen)
+    analyzed_decls := symbols_analyzed_package_decls(files[:])
+    defer delete(analyzed_decls)
     for file in files {
-        package_output, package_err, ok_package_output := symbols_source(file.source)
+        context.allocator = result_allocator
+        package_output, package_err, ok_package_output := symbols_source(
+            file.source,
+            file.path,
+            analyzed_decls[:],
+        )
+        context.allocator = context.temp_allocator
         if !ok_package_output {
             _ = package_err
             return "", false
         }
         symbols_append_source_package_records(&builder, &seen, import_path, resolved_alias, file.path, package_output, package_kind)
+        context.allocator = result_allocator
         delete(package_output)
+        context.allocator = context.temp_allocator
     }
     return strings.clone(strings.to_string(builder), result_allocator), true
 }

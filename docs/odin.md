@@ -45,11 +45,30 @@ Call imported procedures normally:
 ```clojure
 (let [[data err] (os.read_entire_file path context.allocator)]
   (if (= err nil)
-    (do
-      (defer (delete data))
-      (count data))
+    (count data)
     0))
 ```
+
+`os.read_entire_file` has an exact result-lifecycle contract. Kvist schedules
+`delete(data)` automatically when the destructured result does not escape. The
+cleanup is unconditional because Odin may return an allocated partial buffer
+together with an error.
+
+File handles from `os.open`, `os.create`, and `os.clone` also have exact
+contracts:
+
+```clojure
+(let [[file err] (os.open path)]
+  (if (= err nil)
+    (use-file file)
+    false))
+```
+
+For a non-escaping local, Kvist schedules `os.close(file)` only when `err` is
+nil. Returning the handle transfers it instead. Capturing it in a closure or
+storing it in an aggregate is deliberately conservative: automatic cleanup is
+skipped and ownership audit emits `KVO008`, so the eventual owner should close
+it explicitly. No ownership annotation or additional syntax is involved.
 
 Use `(typeid ...)` for polymorphic Odin types when needed:
 
@@ -65,7 +84,12 @@ Use `(typeid ...)` for polymorphic Odin types when needed:
 ```
 
 Odin APIs keep their ownership contracts. Delete owned strings, slices, maps,
-and containers; free owned pointers; do not delete borrowed views.
+and containers; free owned pointers; do not delete borrowed views. Kvist can
+apply an exact registered multi-result contract, such as conditional cleanup
+for `core:text/regex` allocation results or owned bytes from
+`core:os.read_entire_file` and file handles from `core:os.open`, `create`, and
+`clone`, but it never guesses a destructor from a procedure name. Unknown
+opaque resources therefore stay explicit.
 
 ## Interactive Odin Development
 

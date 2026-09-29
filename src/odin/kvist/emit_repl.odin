@@ -88,6 +88,8 @@ repl_append_type_layout :: proc(
 repl_proc_signature :: proc(proc_decl: ^Proc_Decl, e: ^Emitter = nil) -> string {
     builder := strings.builder_make()
     defer strings.builder_destroy(&builder)
+    ownership_contract := procedure_ownership_contract(proc_decl, e)
+    defer procedure_ownership_contract_delete(&ownership_contract)
     if proc_decl.calling_convention != "" {
         fmt.sbprintf(&builder, "abi=%s;", proc_decl.calling_convention)
     }
@@ -97,7 +99,7 @@ repl_proc_signature :: proc(proc_decl: ^Proc_Decl, e: ^Emitter = nil) -> string 
             strings.write_byte(&builder, ',')
         }
         strings.write_string(&builder, param.ty)
-        if param.ownership == .Owned {
+        if procedure_ownership_contract_consumes(&ownership_contract, idx) {
             strings.write_string(&builder, ":owned")
         } else if param.ownership == .Borrowed {
             strings.write_string(&builder, ":borrowed")
@@ -112,9 +114,11 @@ repl_proc_signature :: proc(proc_decl: ^Proc_Decl, e: ^Emitter = nil) -> string 
         strings.write_string(&builder, "->()")
     case .Single:
         fmt.sbprintf(&builder, "->%s", proc_decl.returns.single_ty)
-        if proc_decl.returns.single_ownership == .Owned || proc_decl.owns_result {
+        if proc_decl.returns.single_ownership == .Owned ||
+           ownership_contract.result_flow == .Owned {
             strings.write_string(&builder, ":owned")
-        } else if proc_decl.returns.single_ownership == .Borrowed || proc_decl.borrows_result {
+        } else if proc_decl.returns.single_ownership == .Borrowed ||
+                  ownership_contract.result_flow == .Borrowed {
             strings.write_string(&builder, ":borrowed")
         }
     case .Named:

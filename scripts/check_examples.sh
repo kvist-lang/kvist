@@ -45,11 +45,12 @@ while IFS= read -r input; do
         warnings="$tmp_dir/ownership-warnings.txt"
         ./kvist compile "$input" -o "$output" --map "$map" --ownership-audit 2>"$warnings"
         for expected in \
-            'owned result from make-values is discarded' \
+            'owned result from re.compile is discarded' \
             'owned local xs is never deleted or returned' \
             'owned local xs is overwritten before cleanup' \
             'owned local xs is used after ownership transfer' \
-            'borrowed value escapes owner xs'
+            'borrowed value escapes owner' \
+            'borrowed value is used after owner'
         do
             if ! grep -q "$expected" "$warnings"; then
                 printf 'failed: missing expected ownership warning: %s\n' "$expected" >&2
@@ -57,7 +58,7 @@ while IFS= read -r input; do
                 exit 1
             fi
         done
-        if [ "$(grep -c 'warning\[' "$warnings")" -ne 5 ]; then
+        if [ "$(grep -c 'warning\[' "$warnings")" -ne 6 ]; then
             printf 'failed: ownership warning fixture emitted unexpected warnings\n' >&2
             cat "$warnings" >&2
             exit 1

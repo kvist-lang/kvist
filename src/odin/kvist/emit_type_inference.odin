@@ -673,12 +673,25 @@ obvious_form_type :: proc(e: ^Emitter, form: CST_Form) -> (string, bool) {
         if is_symbol(form.items[0], "type") && len(form.items) == 2 {
             return "keyword", true
         }
+        if is_symbol(form.items[0], "make") && len(form.items) >= 2 {
+            ty, _, ok_ty := parse_type_text(form.items[1])
+            return ty, ok_ty
+        }
         if is_symbol(form.items[0], "zero-of") && len(form.items) == 2 {
             return obvious_form_type(e, form.items[1])
         }
         if is_symbol(form.items[0], "if") && len(form.items) == 4 {
             then_ty, ok_then_ty := obvious_form_type(e, form.items[2])
             else_ty, ok_else_ty := obvious_form_type(e, form.items[3])
+            // Imported allocation helpers do not expose Odin signatures to
+            // the Kvist IR. Their lifetime classification still identifies
+            // an owned string result, which is enough to unify `if` branches.
+            if !ok_then_ty && form_is_owned_alloc_call(form.items[2], .String, e) {
+                then_ty, ok_then_ty = "string", true
+            }
+            if !ok_else_ty && form_is_owned_alloc_call(form.items[3], .String, e) {
+                else_ty, ok_else_ty = "string", true
+            }
             if ok_then_ty && ok_else_ty && then_ty == else_ty {
                 return then_ty, true
             }
@@ -1166,6 +1179,19 @@ bind_obvious_binding_types :: proc(e: ^Emitter, binding: Binding) {
                     bind_local_type(e, binding.pattern[1], "bool")
                 }
                 return
+            }
+            for name, idx in binding.pattern {
+                if name == "" {
+                    continue
+                }
+                if result_ty, ok_result_ty := known_foreign_result_type(
+                    e,
+                    binding.value,
+                    idx,
+                    len(binding.pattern),
+                ); ok_result_ty {
+                    bind_local_type(e, name, result_ty)
+                }
             }
             if proc_decl, ok := find_proc_decl(e, head_name); ok && proc_decl.returns.kind == .Named && len(proc_decl.returns.named) == len(binding.pattern) {
                 for name, idx in binding.pattern {

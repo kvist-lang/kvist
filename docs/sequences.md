@@ -244,7 +244,9 @@ The common rules are:
 - eager builders return owned collections;
 - bang helpers mutate and return no replacement collection;
 - scans return scalars or small tuples;
-- owned results must be returned, deleted, or bound with cleanup;
+- proven non-escaping owned strings, slices, dynamic arrays, SOA values, and
+  maps receive deterministic scope cleanup; ambiguous transfers and custom
+  resources must be returned or cleaned up explicitly;
 - native containers holding managed `Data` values need an explicit ownership
   contract.
 

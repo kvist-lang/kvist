@@ -28,6 +28,38 @@ compile_if_expression_in_let_binding :: proc(t: ^testing.T) {
 }
 
 @(test)
+compile_if_expression_in_local_named_struct_field :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defstruct Result [cause: string])
+
+(defn make-result [use-fallback?: bool] -> Result
+  (Result
+    :cause
+      (clone-text
+        (if use-fallback?
+          "fallback"
+          "reported"))))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(
+        t,
+        strings.contains(
+            output,
+            `return Result{cause = clone_text(("fallback" if use_fallback_p else "reported"))}`,
+        ),
+        true,
+    )
+}
+
+@(test)
 reject_if_expression_without_else :: proc(t: ^testing.T) {
     source := `(package main)
 
@@ -37,8 +69,12 @@ reject_if_expression_without_else :: proc(t: ^testing.T) {
 
     _, err, ok := kvist.compile_source(source)
     testing.expect_value(t, ok, false)
+    if ok {
+        return
+    }
     defer delete(err.message)
     testing.expect_value(t, err.message, "if expression expects test, then, and else")
+    testing.expect_value(t, source[err.span.start:err.span.end], "(if second? 1)")
 }
 
 @(test)
@@ -100,6 +136,30 @@ compile_cond_expression_in_let_binding :: proc(t: ^testing.T) {
     defer delete(output)
 
     testing.expect_value(t, strings.contains(output, "value := (-1 if (n) < (0) else (0 if (n) == (0) else 1))"), true)
+}
+
+@(test)
+reject_macro_expanded_if_without_else_points_to_macro_call :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defn choose [] -> string
+  (let [value (cond
+                true "fallback")]
+    value))`
+
+    _, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, false)
+    if ok {
+        return
+    }
+    defer delete(err.message)
+    testing.expect_value(t, err.message, "if expression expects test, then, and else")
+    testing.expect_value(
+        t,
+        source[err.span.start:err.span.end],
+        `(cond
+                true "fallback")`,
+    )
 }
 
 @(test)
@@ -1668,6 +1728,8 @@ Point :: struct {
 
 mutate :: proc(total: ^int) -> int {
     xs := [dynamic]int{1, 2, 3}
+    kvist_owner_1 := true
+    defer (proc(kvist_place: ^[dynamic]int, kvist_owner: ^bool) { if kvist_owner^ { delete(kvist_place^) } })(&xs, &kvist_owner_1)
     point := Point{x = 4, y = 5, active_p = false}
     point.y += 4
     (point).y += 1

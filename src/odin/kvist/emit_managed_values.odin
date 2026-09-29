@@ -419,14 +419,19 @@ managed_destroy_value_text :: proc(e: ^Emitter, ty, value: string) -> string {
 ownership_type_has_destructor :: proc(e: ^Emitter, ty: string) -> bool {
     trimmed := strings.trim_space(ty)
     return trimmed == "string" ||
+           type_text_is_slice(trimmed) ||
            type_text_is_dynamic_array(trimmed) ||
+           type_text_is_dynamic_soa(trimmed) ||
            type_text_is_map(trimmed) ||
            type_text_has_managed_lifecycle(e, trimmed)
 }
 
 ownership_destroy_value_text :: proc(e: ^Emitter, ty, value: string) -> string {
     trimmed := strings.trim_space(ty)
-    if trimmed == "string" || type_text_is_map(trimmed) {
+    if trimmed == "string" ||
+       type_text_is_slice(trimmed) ||
+       type_text_is_dynamic_soa(trimmed) ||
+       type_text_is_map(trimmed) {
         return emit_call_text("delete", []string{value})
     }
     return managed_destroy_value_text(e, trimmed, value)
@@ -731,9 +736,11 @@ form_produces_owned_managed_type :: proc(
     }
     if _, proc_decl, ok_proc := resolve_proc_call_decl(e, form.items[0].text);
        ok_proc && proc_decl != nil {
+        contract := procedure_result_ownership_contract(proc_decl, e)
+        defer procedure_ownership_contract_delete(&contract)
         return proc_decl.returns.kind == .Single &&
                proc_decl.returns.single_ty == ty &&
-               proc_decl.owns_result
+               contract.result_flow == .Owned
     }
     return false
 }
@@ -747,32 +754,233 @@ owned_managed_form_type :: proc(e: ^Emitter, form: CST_Form) -> (string, bool) {
     return ty, true
 }
 
-emit_discarded_expr :: proc(e: ^Emitter, form: CST_Form, expr: string) {
-    if managed_ty, managed := owned_managed_form_type(e, form); managed {
+form_has_active_store_event :: proc(e: ^Emitter, form: CST_Form) -> bool {
+    if form.kind == .Symbol {
+        name := map_name(form.text)
+        defer delete(name)
+        _, stored := ownership_ir_active_event_place(e, name, form.span, .Store)
+        return stored
+    }
+    if owner_name, has_owner := form_direct_borrow_owner_name(form, e); has_owner {
+        defer delete(owner_name)
+        _, stored := ownership_ir_active_event_place(
+            e,
+            owner_name,
+            form.span,
+            .Store,
+        )
+        return stored
+    }
+    return false
+}
+
+stored_struct_constructor_fields :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+) -> [dynamic]Struct_Field {
+    stored: [dynamic]Struct_Field
+    if form.kind != .List || len(form.items) == 0 ||
+       form.items[0].kind != .Symbol {
+        return stored
+    }
+    type_name := map_name(form.items[0].text)
+    defer delete(type_name)
+    struct_decl, ok_struct := find_struct_decl(e, type_name)
+    if !ok_struct {
+        return stored
+    }
+    args := form.items[1:]
+    if struct_args_use_named_fields(args) {
+        for i := 0; i+1 < len(args); i += 2 {
+            field_name, ok_name := brace_key_name(args[i])
+            if !ok_name || !form_has_active_store_event(e, args[i+1]) {
+                continue
+            }
+            if field, ok_field := find_struct_field(struct_decl, field_name); ok_field {
+                append(&stored, field^)
+            }
+        }
+        return stored
+    }
+    for value, idx in args {
+        if idx >= len(struct_decl.fields) {
+            break
+        }
+        if form_has_active_store_event(e, value) {
+            append(&stored, struct_decl.fields[idx])
+        }
+    }
+    return stored
+}
+
+form_requires_owned_discard_cleanup :: proc(e: ^Emitter, form: CST_Form) -> bool {
+    if form_produces_owned_value(form, e) {
+        return true
+    }
+    if _, managed := owned_managed_form_type(e, form); managed {
+        return true
+    }
+    stored_fields := stored_struct_constructor_fields(e, form)
+    defer delete(stored_fields)
+    if len(stored_fields) > 0 {
+        return true
+    }
+    returned_fields := proc_call_owned_result_fields(e, form)
+    defer delete(returned_fields)
+    return len(returned_fields) > 0
+}
+
+emit_owned_discard_cleanup :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    expr: string,
+    strategy := Ownership_IR_Automatic_Cleanup.None,
+) -> bool {
+    allow_managed := strategy == .None || strategy == .Managed
+    allow_native := strategy == .None || strategy == .Native
+    if managed_ty, managed := owned_managed_form_type(e, form);
+       allow_managed && managed {
         temp := thread_temp_name(e)
         emit_prefixed_expr_mapped(e, fmt.tprintf("%s := ", temp), expr, form.span)
         emit_line_mapped(e, managed_destroy_value_text(e, managed_ty, temp), form.span)
-        return
+        return true
+    }
+    stored_fields := stored_struct_constructor_fields(e, form)
+    defer delete(stored_fields)
+    if allow_managed && len(stored_fields) > 0 {
+        temp := thread_temp_name(e)
+        emit_prefixed_expr_mapped(e, fmt.tprintf("%s := ", temp), expr, form.span)
+        for offset in 0..<len(stored_fields) {
+            field := stored_fields[len(stored_fields)-1-offset]
+            emit_line_mapped(
+                e,
+                ownership_destroy_value_text(
+                    e,
+                    field.ty,
+                    fmt.tprintf("%s.%s", temp, field.name),
+                ),
+                form.span,
+            )
+        }
+        return true
+    }
+    returned_fields := proc_call_owned_result_fields(e, form)
+    defer delete(returned_fields)
+    if allow_managed && len(returned_fields) > 0 {
+        temp := thread_temp_name(e)
+        emit_prefixed_expr_mapped(e, fmt.tprintf("%s := ", temp), expr, form.span)
+        for offset in 0..<len(returned_fields) {
+            field := returned_fields[len(returned_fields)-1-offset]
+            emit_line_mapped(
+                e,
+                ownership_destroy_value_text(
+                    e,
+                    field.ty,
+                    fmt.tprintf("%s.%s", temp, field.name),
+                ),
+                form.span,
+            )
+        }
+        return true
+    }
+    if allow_native && form_supports_automatic_native_delete(form, e) {
+        temp := thread_temp_name(e)
+        emit_prefixed_expr_mapped(e, fmt.tprintf("%s := ", temp), expr, form.span)
+        emit_line_mapped(e, fmt.tprintf("delete(%s)", temp), form.span)
+        return true
+    }
+    return false
+}
+
+emit_discarded_expr_value :: proc(e: ^Emitter, form: CST_Form, expr: string) {
+    if form.kind == .List && len(form.items) > 0 && form.items[0].kind == .Symbol {
+        if _, proc_decl, ok_proc := resolve_proc_call_decl(e, form.items[0].text);
+           ok_proc && proc_decl != nil &&
+           proc_decl.returns.kind == .Named && len(proc_decl.returns.named) > 1 {
+            temps: [dynamic]string
+            line_builder := strings.builder_make()
+            defer strings.builder_destroy(&line_builder)
+            for _ in proc_decl.returns.named {
+                temp := thread_temp_name(e)
+                append(&temps, temp)
+                if len(temps) > 1 {
+                    strings.write_string(&line_builder, ", ")
+                }
+                strings.write_string(&line_builder, temp)
+            }
+            strings.write_string(&line_builder, " := ")
+            emit_prefixed_expr_mapped(
+                e,
+                strings.clone(strings.to_string(line_builder)),
+                expr,
+                form.span,
+            )
+            for temp in temps {
+                emit_line_mapped(e, fmt.tprintf("_ = %s", temp), form.span)
+            }
+            delete(temps)
+            return
+        }
     }
     emit_prefixed_expr_mapped(e, "_ = ", expr, form.span)
 }
 
-managed_binding_value_text :: proc(e: ^Emitter, binding: Binding, value: string) -> (text, managed_ty: string, managed: bool) {
+emit_discarded_expr :: proc(e: ^Emitter, form: CST_Form, expr: string) {
+    event, automatic_cleanup, tracked :=
+        ownership_ir_current_transient_event(e, form)
+    if tracked {
+        if event == .Destroy &&
+           automatic_cleanup != .None &&
+           emit_owned_discard_cleanup(
+               e,
+               form,
+               expr,
+               automatic_cleanup,
+           ) {
+            e.ownership_plan_adoptions += 1
+            return
+        }
+        emit_discarded_expr_value(e, form, expr)
+        return
+    }
+    // Invalid or non-procedure plans retain the established lowering path.
+    // Valid procedure plans always contain a transient for owned discards.
+    if emit_owned_discard_cleanup(e, form, expr) {
+        return
+    }
+    emit_discarded_expr_value(e, form, expr)
+}
+
+binding_supports_automatic_native_cleanup :: proc(e: ^Emitter, binding: Binding) -> bool {
+    ty, ok_ty := obvious_binding_type(e, binding)
+    return ok_ty &&
+           ownership_type_has_destructor(e, ty) &&
+           type_supports_automatic_native_delete(ty) &&
+           binding_value_produces_owned_value(binding, e) &&
+           !form_produces_owned_managed_type(e, binding.value, ty)
+}
+
+managed_binding_value_text :: proc(e: ^Emitter, binding: Binding, value: string) -> (text, managed_ty: string, managed, automatic_native: bool) {
     ty, ok_ty := obvious_binding_type(e, binding)
     if !ok_ty || !ownership_type_has_destructor(e, ty) || binding.name == "" || binding.is_destructure || binding.is_result_binding {
-        return value, "", false
+        return value, "", false, false
     }
     if form_produces_owned_managed_type(e, binding.value, ty) {
-        return value, ty, true
+        return value, ty, true, false
     }
     if type_text_has_data_lifecycle(e, ty) {
-        return managed_clone_value_text(e, ty, value), ty, true
+        return managed_clone_value_text(e, ty, value), ty, true, false
+    }
+    if binding_supports_automatic_native_cleanup(e, binding) {
+        // The emitter installs cleanup only after proving that this local is
+        // not reassigned or transferred by the surrounding body.
+        return value, ty, true, true
     }
     // Native strings, arrays, maps, and opaque resources retain Odin's
     // explicit lifetime style. Allocation and transfer inference still powers
     // diagnostics and `kvist lifetimes`, but does not silently install cleanup
     // for storage whose escape through native APIs cannot be proven.
-    return value, "", false
+    return value, "", false, false
 }
 
 managed_return_value_text_for_type :: proc(e: ^Emitter, form: CST_Form, value, return_ty: string) -> string {
@@ -808,13 +1016,28 @@ managed_return_value_text :: proc(e: ^Emitter, form: CST_Form, value: string, re
     return value
 }
 
-emit_managed_destructure_cleanup :: proc(e: ^Emitter, binding: Binding) {
-    if !binding.is_destructure || binding.value.kind != .List || len(binding.value.items) == 0 || binding.value.items[0].kind != .Symbol {
+emit_managed_destructure_cleanup :: proc(
+    e: ^Emitter,
+    binding: Binding,
+    bindings: []Binding,
+    binding_index: int,
+    body: []CST_Form,
+) {
+    lifecycle_binding :=
+        binding.is_destructure ||
+        (binding.is_result_binding && binding.or_modifier != "or-return")
+    if !lifecycle_binding ||
+       binding.value.kind != .List ||
+       len(binding.value.items) == 0 ||
+       binding.value.items[0].kind != .Symbol {
         return
     }
     head_name := map_name(binding.value.items[0].text)
     defer delete(head_name)
-    if head_name == "decode_data" && len(binding.pattern) == 3 && len(binding.value.items) >= 2 {
+    if binding.is_destructure &&
+       head_name == "decode_data" &&
+       len(binding.pattern) == 3 &&
+       len(binding.value.items) >= 2 {
         target_ty, _, ok_target_ty := parse_type_text(binding.value.items[1])
         if ok_target_ty {
             if binding.pattern[0] != "" &&
@@ -834,7 +1057,7 @@ emit_managed_destructure_cleanup :: proc(e: ^Emitter, binding: Binding) {
         }
         return
     }
-    if head_name == "validate_data" && len(binding.pattern) == 2 {
+    if binding.is_destructure && head_name == "validate_data" && len(binding.pattern) == 2 {
         if binding.pattern[0] != "" {
             emit_line(e, fmt.tprintf(
                 "defer %s",
@@ -843,8 +1066,93 @@ emit_managed_destructure_cleanup :: proc(e: ^Emitter, binding: Binding) {
         }
         return
     }
+    for name, idx in binding.pattern {
+        if name == "" {
+            continue
+        }
+        lifecycle, known := infer_result_lifecycle(
+            e,
+            binding.value,
+            idx,
+            len(binding.pattern),
+        )
+        if !known {
+            continue
+        }
+        expected_cleanup := Ownership_IR_Cleanup_Need.Always
+        if lifecycle.condition != .Always {
+            expected_cleanup = .Conditional
+        }
+        if per_exit_place, adopted :=
+            ownership_ir_current_plan_per_exit_place(
+                e,
+                binding,
+                name,
+                expected_cleanup,
+            ); adopted && ownership_ir_activate_per_exit_place(
+                e,
+                binding,
+                lifecycle,
+                per_exit_place,
+            ) {
+            e.ownership_plan_adoptions += 1
+            result_lifecycle_delete(&lifecycle)
+            continue
+        }
+        if ownership_ir_current_plan_tracks_stored_owner(
+            e,
+            binding,
+            name,
+        ) {
+            result_lifecycle_delete(&lifecycle)
+            continue
+        }
+        if !destructured_result_cleanup_is_safe(
+            e,
+            bindings,
+            binding_index,
+            body,
+            name,
+        ) {
+            result_lifecycle_delete(&lifecycle)
+            continue
+        }
+        if !result_lifecycle_condition_is_stable(
+            lifecycle,
+            binding.pattern[:],
+            body,
+        ) {
+            result_lifecycle_delete(&lifecycle)
+            continue
+        }
+        if ownership_ir_current_plan_authorizes_scope_cleanup(
+            e,
+            binding,
+            name,
+            expected_cleanup,
+        ) {
+            e.ownership_plan_adoptions += 1
+            emit_result_lifecycle_cleanup(e, lifecycle, binding.pattern[:], idx)
+            result_lifecycle_delete(&lifecycle)
+            continue
+        }
+        // All non-candidates retain the legacy path while the ownership plan
+        // is introduced one proven-equivalent category at a time.
+        emit_result_lifecycle_cleanup(e, lifecycle, binding.pattern[:], idx)
+        result_lifecycle_delete(&lifecycle)
+    }
+    if !binding.is_destructure {
+        return
+    }
     proc_decl, ok_proc := find_proc_decl(e, head_name)
-    if !ok_proc || proc_decl.borrows_result || proc_decl.returns.kind != .Named || len(proc_decl.returns.named) != len(binding.pattern) {
+    if !ok_proc {
+        return
+    }
+    contract := procedure_result_ownership_contract(proc_decl, e)
+    defer procedure_ownership_contract_delete(&contract)
+    if contract.result_flow == .Borrowed ||
+       proc_decl.returns.kind != .Named ||
+       len(proc_decl.returns.named) != len(binding.pattern) {
         return
     }
     for name, idx in binding.pattern {
@@ -956,6 +1264,14 @@ assignment_move_tracked_local_text :: proc(
         return value, false
     }
     owner_flag, has_owner := lookup_managed_local_owner(e, source_name)
+    if !has_owner {
+        owner_flag, has_owner = ownership_ir_active_event_owner_flag(
+            e,
+            source_name,
+            value_form.span,
+            .Store,
+        )
+    }
     if !has_owner {
         return value, false
     }

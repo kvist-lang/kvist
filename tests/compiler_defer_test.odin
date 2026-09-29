@@ -556,6 +556,68 @@ compile_defer_binding_passed_as_borrowed_slice_to_copied_result :: proc(t: ^test
 }
 
 @(test)
+compile_defer_string_passed_to_owned_copy_wrapper :: proc(t: ^testing.T) {
+    source := `(package main)
+(import strings "core:strings")
+
+(defstruct Result [
+  text: string
+])
+
+(defn copy-text [text: string] -> string
+  (let [[out err] (strings.clone text)]
+    out))
+
+(defn copy-text-wrapper [text: string] -> string
+  (copy-text text))
+
+(defn copied [] -> Result
+  (let [source (str "hello") :defer
+        text (copy-text source)]
+    (Result :text text)))
+
+(defn copied-direct [] -> Result
+  (let [source (str "hello") :defer]
+    (Result :text (copy-text-wrapper source))))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        defer delete(err.message)
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "defer delete(source)"), true)
+    testing.expect_value(t, strings.contains(output, "text := copy_text(source)"), true)
+    testing.expect_value(t, strings.contains(output, "text = copy_text_wrapper(source)"), true)
+}
+
+@(test)
+reject_defer_string_passed_to_owned_slice_with_borrowed_elements :: proc(t: ^testing.T) {
+    source := `(package main)
+(import strings "core:strings")
+
+(defstruct Parts [
+  values: []string
+])
+
+(defn split-text [text: string] -> []string
+  (strings.split text ","))
+
+(defn split [] -> Parts
+  (let [source (str "hello,world") :defer
+        values (split-text source)]
+    (Parts :values values)))`
+
+    _, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, false)
+    defer delete(err.message)
+    testing.expect_value(t, err.message, "returned value depends on `source`, but `:defer` cleans up `source` when this scope exits, leaving the returned value invalid; return an owned copy, keep the dependent value inside this scope, or remove `:defer` to transfer ownership")
+}
+
+@(test)
 reject_returning_defer_binding_through_local_wrapper :: proc(t: ^testing.T) {
     source := `(package main)
 
@@ -1370,11 +1432,11 @@ warn_defer_third_party_conditional_borrowed_view_with_zero_fallback :: proc(t: ^
     testing.expect_value(t, strings.contains(result.output, "support__trim_or_label :: #force_inline proc(s: string, trim_p: bool) -> string"), true)
     testing.expect_value(t, strings.contains(result.output, "#borrowed"), false)
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
-    testing.expect_value(t, len(result.warnings), 3)
-    if len(result.warnings) == 3 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.maybe-split is discarded; bind it, delete it, or return it")
-        testing.expect_value(t, result.warnings[1].message, "support.maybe-tail returns a borrowed view; do not delete it, delete the owner instead")
-        testing.expect_value(t, result.warnings[2].message, "support.maybe-trim returns a borrowed view; do not delete it, delete the owner instead")
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
+    testing.expect_value(t, len(result.warnings), 2)
+    if len(result.warnings) == 2 {
+        testing.expect_value(t, result.warnings[0].message, "support.maybe-tail returns a borrowed view; do not delete it, delete the owner instead")
+        testing.expect_value(t, result.warnings[1].message, "support.maybe-trim returns a borrowed view; do not delete it, delete the owner instead")
     }
 }
 

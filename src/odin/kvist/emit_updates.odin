@@ -348,8 +348,16 @@ emit_data_update_expr :: proc(e: ^Emitter, form: CST_Form, target_text: string) 
     }
     if form.items[3].kind == .Symbol {
         updater_name := map_name(form.items[3].text)
-        if updater_decl, ok_updater := find_proc_decl(e, updater_name); ok_updater && updater_decl.borrows_result {
-            updated_text = emit_call_text("kvist_data_retain", []string{updated_text})
+        if updater_decl, ok_updater := find_proc_decl(e, updater_name);
+           ok_updater {
+            contract := procedure_result_ownership_contract(updater_decl, e)
+            if contract.result_flow == .Borrowed {
+                updated_text = emit_call_text(
+                    "kvist_data_retain",
+                    []string{updated_text},
+                )
+            }
+            procedure_ownership_contract_delete(&contract)
         }
         delete(updater_name)
     }

@@ -189,6 +189,32 @@ form_requires_explicit_owned_cleanup :: proc(form: CST_Form, e: ^Emitter = nil) 
     return !compiler_managed
 }
 
+// Native values whose ownership and builtin destructor are both known can be
+// reclaimed without introducing a type-level lifecycle protocol. Keep opaque
+// resources out of this path: an inferred owned result is not enough to prove
+// that Odin's delete is the correct destructor for an arbitrary native type.
+type_supports_automatic_native_delete :: proc(ty: string) -> bool {
+    return type_text_is_string(ty) ||
+           type_text_is_slice(ty) ||
+           type_text_is_dynamic_array(ty) ||
+           type_text_is_dynamic_soa(ty) ||
+           type_text_is_map(ty)
+}
+
+form_supports_automatic_native_delete :: proc(form: CST_Form, e: ^Emitter = nil) -> bool {
+    if !form_requires_explicit_owned_cleanup(form, e) {
+        return false
+    }
+    ty, ok_ty := obvious_form_type(e, form)
+    if !ok_ty && form_is_owned_alloc_call(form, .String, e) {
+        ty, ok_ty = "string", true
+    }
+    if !ok_ty {
+        return false
+    }
+    return type_supports_automatic_native_delete(ty)
+}
+
 binding_value_produces_owned_value :: proc(binding: Binding, e: ^Emitter = nil) -> bool {
     if binding.is_typed &&
        (binding.value.kind == .Vector || binding.value.kind == .Brace || binding.value.kind == .Set) {

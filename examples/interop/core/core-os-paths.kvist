@@ -41,10 +41,14 @@
   ;; if-ok is for Odin APIs whose second return value is an error. It checks
   ;; for the zero error value and keeps the owned data cleanup local.
   (if-ok [[data err] (os.read_entire_file path context.allocator)]
-    (do
-      (defer (delete data))
-      (count data))
+    (count data)
     0))
+
+(defn can-open-demo-file? [path: string] -> bool
+  ;; open has an exact lifecycle contract. On success, Kvist closes this
+  ;; non-escaping handle at scope exit; on error there is no close call.
+  (let [[file err] (os.open path)]
+    (= err nil)))
 
 (defn remove-demo-file [path: string] -> os.Error
   (os.remove path))
@@ -70,6 +74,9 @@
 
   (read-demo-length "tmp.kvist-core-os.txt")
   ;; => 18
+
+  (can-open-demo-file? "tmp.kvist-core-os.txt")
+  ;; => true
 
   (remove-demo-file "tmp.kvist-core-os.txt")
   ;; => nil

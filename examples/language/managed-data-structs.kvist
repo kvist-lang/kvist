@@ -14,7 +14,7 @@
 
 (defn main []
   (let [name (data.from-string "Ada")
-        person (Person :name name)
+        person (Person :name (data.retain name))
         copy person]
     (print-person (make-person name))
     (discard (make-person name))

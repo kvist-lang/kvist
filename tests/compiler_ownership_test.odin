@@ -9,6 +9,2101 @@ import "core:testing"
 import kvist "../src/odin/kvist"
 
 @(test)
+ownership_contract_registry_is_well_formed :: proc(t: ^testing.T) {
+    message, ok := kvist.ownership_contracts_validate()
+    if !ok {
+        defer delete(message)
+    }
+    testing.expect_value(t, ok, true)
+    testing.expect_value(t, message, "")
+}
+
+@(test)
+ownership_ir_classifies_straight_line_and_moved_cleanup :: proc(t: ^testing.T) {
+    graph := kvist.Ownership_IR_Proc{
+        place_count = 2,
+        entry = 0,
+    }
+    defer kvist.ownership_ir_proc_delete(&graph)
+    block := kvist.ownership_ir_add_block(&graph)
+    testing.expect_value(t, block, 0)
+    testing.expect_value(
+        t,
+        kvist.ownership_ir_add_event(&graph, block, {kind = .Acquire, place = 0}),
+        true,
+    )
+    testing.expect_value(
+        t,
+        kvist.ownership_ir_add_event(&graph, block, {kind = .Move, place = 0, target = 1}),
+        true,
+    )
+    analysis := kvist.ownership_ir_analyze(graph)
+    defer kvist.ownership_ir_analysis_delete(&analysis)
+
+    testing.expect_value(t, analysis.valid, true)
+    testing.expect_value(t, analysis.converged, true)
+    testing.expect_value(
+        t,
+        kvist.ownership_ir_cleanup_need(analysis.blocks[0].exit[0]),
+        kvist.Ownership_IR_Cleanup_Need.None,
+    )
+    testing.expect_value(
+        t,
+        kvist.ownership_ir_cleanup_need(analysis.blocks[0].exit[1]),
+        kvist.Ownership_IR_Cleanup_Need.Always,
+    )
+}
+
+@(test)
+ownership_ir_classifies_external_store_cleanup :: proc(t: ^testing.T) {
+    graph := kvist.Ownership_IR_Proc{
+        place_count = 1,
+        entry = 0,
+    }
+    defer kvist.ownership_ir_proc_delete(&graph)
+    block := kvist.ownership_ir_add_block(&graph)
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Acquire, place = 0},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Store, place = 0, target = -1},
+    )
+    analysis := kvist.ownership_ir_analyze(graph)
+    defer kvist.ownership_ir_analysis_delete(&analysis)
+
+    testing.expect_value(t, analysis.valid, true)
+    testing.expect_value(t, analysis.converged, true)
+    testing.expect_value(
+        t,
+        kvist.ownership_ir_cleanup_need(analysis.blocks[0].exit[0]),
+        kvist.Ownership_IR_Cleanup_Need.None,
+    )
+}
+
+@(test)
+ownership_ir_classifies_branch_cleanup :: proc(t: ^testing.T) {
+    graph := kvist.Ownership_IR_Proc{
+        place_count = 1,
+        entry = 0,
+    }
+    defer kvist.ownership_ir_proc_delete(&graph)
+    entry := kvist.ownership_ir_add_block(&graph)
+    destroyed := kvist.ownership_ir_add_block(&graph)
+    live := kvist.ownership_ir_add_block(&graph)
+    joined := kvist.ownership_ir_add_block(&graph)
+    kvist.ownership_ir_add_event(&graph, entry, {kind = .Acquire, place = 0})
+    kvist.ownership_ir_add_event(&graph, destroyed, {kind = .Destroy, place = 0})
+    kvist.ownership_ir_add_successor(&graph, entry, destroyed)
+    kvist.ownership_ir_add_successor(&graph, entry, live)
+    kvist.ownership_ir_add_successor(&graph, destroyed, joined)
+    kvist.ownership_ir_add_successor(&graph, live, joined)
+    analysis := kvist.ownership_ir_analyze(graph)
+    defer kvist.ownership_ir_analysis_delete(&analysis)
+
+    testing.expect_value(t, analysis.valid, true)
+    testing.expect_value(t, analysis.converged, true)
+    testing.expect_value(t, analysis.blocks[3].reachable, true)
+    testing.expect_value(
+        t,
+        kvist.ownership_ir_cleanup_need(analysis.blocks[3].entry[0]),
+        kvist.Ownership_IR_Cleanup_Need.Conditional,
+    )
+}
+
+@(test)
+ownership_ir_borrow_lattice_distinguishes_may_and_must_across_branches :: proc(t: ^testing.T) {
+    graph := kvist.Ownership_IR_Proc{
+        place_count = 4,
+        entry = 0,
+    }
+    defer kvist.ownership_ir_proc_delete(&graph)
+    entry := kvist.ownership_ir_add_block(&graph)
+    left := kvist.ownership_ir_add_block(&graph)
+    right := kvist.ownership_ir_add_block(&graph)
+    joined := kvist.ownership_ir_add_block(&graph)
+    kvist.ownership_ir_add_event(
+        &graph,
+        left,
+        {kind = .Borrow_Assign, place = 2, target = 0},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        left,
+        {kind = .Borrow_Assign, place = 3, target = 0},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        right,
+        {kind = .Borrow_Assign, place = 2, target = 1},
+    )
+    kvist.ownership_ir_add_successor(&graph, entry, left)
+    kvist.ownership_ir_add_successor(&graph, entry, right)
+    kvist.ownership_ir_add_successor(&graph, left, joined)
+    kvist.ownership_ir_add_successor(&graph, right, joined)
+    analysis := kvist.ownership_ir_analyze_borrows(graph)
+    defer kvist.ownership_ir_borrow_analysis_delete(&analysis)
+
+    testing.expect_value(t, analysis.valid, true)
+    testing.expect_value(t, analysis.converged, true)
+    testing.expect_value(t, analysis.blocks[joined].reachable, true)
+    testing.expect_value(
+        t,
+        analysis.blocks[joined].entry[2],
+        kvist.Ownership_IR_Borrow_Fact{
+            may_borrowed = true,
+            must_borrowed = true,
+        },
+    )
+    testing.expect_value(
+        t,
+        analysis.blocks[joined].entry[3],
+        kvist.Ownership_IR_Borrow_Fact{
+            may_borrowed = true,
+            must_borrowed = false,
+        },
+    )
+    testing.expect_value(
+        t,
+        analysis.blocks[joined].entry_owners[2*graph.place_count+0],
+        true,
+    )
+    testing.expect_value(
+        t,
+        analysis.blocks[joined].entry_owners[2*graph.place_count+1],
+        true,
+    )
+}
+
+@(test)
+ownership_ir_borrow_lattice_tracks_destroyed_owners_across_branches :: proc(t: ^testing.T) {
+    graph := kvist.Ownership_IR_Proc{
+        place_count = 5,
+        entry = 0,
+    }
+    defer kvist.ownership_ir_proc_delete(&graph)
+    entry := kvist.ownership_ir_add_block(&graph)
+    left := kvist.ownership_ir_add_block(&graph)
+    right := kvist.ownership_ir_add_block(&graph)
+    joined := kvist.ownership_ir_add_block(&graph)
+    kvist.ownership_ir_add_event(
+        &graph,
+        left,
+        {kind = .Borrow_Assign, place = 2, target = 0},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        left,
+        {kind = .Borrow_Assign, place = 3, target = 0},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        left,
+        {kind = .Destroy, place = 0},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        right,
+        {kind = .Borrow_Assign, place = 2, target = 1},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        right,
+        {kind = .Borrow_Assign, place = 3, target = 4},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        right,
+        {kind = .Destroy, place = 1},
+    )
+    kvist.ownership_ir_add_successor(&graph, entry, left)
+    kvist.ownership_ir_add_successor(&graph, entry, right)
+    kvist.ownership_ir_add_successor(&graph, left, joined)
+    kvist.ownership_ir_add_successor(&graph, right, joined)
+    analysis := kvist.ownership_ir_analyze_borrows(graph)
+    defer kvist.ownership_ir_borrow_analysis_delete(&analysis)
+
+    testing.expect_value(t, analysis.valid, true)
+    testing.expect_value(t, analysis.converged, true)
+    testing.expect_value(
+        t,
+        analysis.blocks[joined].entry_invalid[2],
+        kvist.Ownership_IR_Borrow_Invalid_Fact{
+            may_invalid = true,
+            must_invalid = true,
+        },
+    )
+    testing.expect_value(
+        t,
+        analysis.blocks[joined].entry_invalid[3],
+        kvist.Ownership_IR_Borrow_Invalid_Fact{
+            may_invalid = true,
+            must_invalid = false,
+        },
+    )
+    testing.expect_value(
+        t,
+        analysis.blocks[joined].entry_invalid_owners[2*graph.place_count+0],
+        true,
+    )
+    testing.expect_value(
+        t,
+        analysis.blocks[joined].entry_invalid_owners[2*graph.place_count+1],
+        true,
+    )
+    testing.expect_value(
+        t,
+        analysis.blocks[joined].entry_owners[3*graph.place_count+4],
+        true,
+    )
+}
+
+@(test)
+ownership_ir_distinguishes_scheduled_cleanup :: proc(t: ^testing.T) {
+    graph := kvist.Ownership_IR_Proc{
+        place_count = 2,
+        entry = 0,
+    }
+    defer kvist.ownership_ir_proc_delete(&graph)
+    block := kvist.ownership_ir_add_block(&graph)
+    kvist.ownership_ir_add_event(&graph, block, {kind = .Acquire, place = 0})
+    kvist.ownership_ir_add_event(&graph, block, {kind = .Acquire, place = 1})
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Schedule_Destroy, place = 0},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Schedule_Destroy, place = 1, conditional = true},
+    )
+    analysis := kvist.ownership_ir_analyze(graph)
+    defer kvist.ownership_ir_analysis_delete(&analysis)
+
+    testing.expect_value(t, analysis.valid, true)
+    testing.expect_value(t, analysis.converged, true)
+    testing.expect_value(
+        t,
+        kvist.ownership_ir_cleanup_need(analysis.blocks[0].exit[0]),
+        kvist.Ownership_IR_Cleanup_Need.None,
+    )
+    testing.expect_value(
+        t,
+        kvist.ownership_ir_cleanup_need(analysis.blocks[0].exit[1]),
+        kvist.Ownership_IR_Cleanup_Need.Conditional,
+    )
+}
+
+@(test)
+ownership_ir_cleanup_plan_is_per_exit :: proc(t: ^testing.T) {
+    graph := kvist.Ownership_IR_Proc{
+        place_count = 1,
+        entry = 0,
+    }
+    defer kvist.ownership_ir_proc_delete(&graph)
+    entry := kvist.ownership_ir_add_block(&graph)
+    returned := kvist.ownership_ir_add_block(&graph)
+    live := kvist.ownership_ir_add_block(&graph)
+    returned_boundary := kvist.ownership_ir_add_block(&graph)
+    live_boundary := kvist.ownership_ir_add_block(&graph)
+    kvist.ownership_ir_add_event(&graph, entry, {kind = .Acquire, place = 0})
+    kvist.ownership_ir_add_event(&graph, returned, {kind = .Return, place = 0})
+    kvist.ownership_ir_add_successor(&graph, entry, returned)
+    kvist.ownership_ir_add_successor(&graph, entry, live)
+    kvist.ownership_ir_add_successor(&graph, returned, returned_boundary)
+    kvist.ownership_ir_add_successor(&graph, live, live_boundary)
+
+    scope_exits: [dynamic]kvist.Ownership_IR_Exit
+    defer delete(scope_exits)
+    append(
+        &scope_exits,
+        kvist.Ownership_IR_Exit{kind = .Return, block = returned_boundary},
+        kvist.Ownership_IR_Exit{kind = .Fallthrough, block = live_boundary},
+    )
+    places: [dynamic]kvist.Ownership_IR_Shadow_Place
+    defer delete(places)
+    append(&places, kvist.Ownership_IR_Shadow_Place{
+        place = 0,
+        name = "data",
+        cleanup_head = "delete",
+        scope_exits = scope_exits,
+    })
+    shadow := kvist.Ownership_IR_Shadow_Proc{
+        graph = graph,
+        places = places,
+    }
+    analysis := kvist.ownership_ir_analyze(graph)
+    defer kvist.ownership_ir_analysis_delete(&analysis)
+    plan := kvist.ownership_ir_build_cleanup_plan(shadow, analysis)
+    defer kvist.ownership_ir_cleanup_plan_delete(&plan)
+
+    testing.expect_value(t, plan.valid, true)
+    testing.expect_value(t, len(plan.actions), 2)
+    if len(plan.actions) == 2 {
+        testing.expect_value(t, plan.actions[0].block, returned_boundary)
+        testing.expect_value(t, plan.actions[0].exit_kind, kvist.Ownership_IR_Exit_Kind.Return)
+        testing.expect_value(t, plan.actions[0].need, kvist.Ownership_IR_Cleanup_Need.None)
+        testing.expect_value(t, plan.actions[1].block, live_boundary)
+        testing.expect_value(t, plan.actions[1].exit_kind, kvist.Ownership_IR_Exit_Kind.Fallthrough)
+        testing.expect_value(t, plan.actions[1].need, kvist.Ownership_IR_Cleanup_Need.Always)
+    }
+    testing.expect_value(
+        t,
+        kvist.ownership_ir_cleanup_plan_need(plan, 0),
+        kvist.Ownership_IR_Cleanup_Need.Conditional,
+    )
+    placement, placement_need := kvist.ownership_ir_cleanup_plan_placement(
+        plan,
+        0,
+    )
+    testing.expect_value(
+        t,
+        placement,
+        kvist.Ownership_IR_Cleanup_Placement.Per_Exit,
+    )
+    testing.expect_value(
+        t,
+        placement_need,
+        kvist.Ownership_IR_Cleanup_Need.Conditional,
+    )
+
+    kvist.ownership_ir_add_event(
+        &graph,
+        live_boundary,
+        {kind = .Borrow, place = 0},
+    )
+    invalid_plan := kvist.ownership_ir_build_cleanup_plan(shadow, analysis)
+    defer kvist.ownership_ir_cleanup_plan_delete(&invalid_plan)
+    testing.expect_value(t, invalid_plan.valid, false)
+}
+
+@(test)
+ownership_ir_cleanup_plan_exposes_structured_diagnostics :: proc(
+    t: ^testing.T,
+) {
+    graph := kvist.Ownership_IR_Proc{
+        place_count = 1,
+        entry = 0,
+    }
+    defer kvist.ownership_ir_proc_delete(&graph)
+    entry := kvist.ownership_ir_add_block(&graph)
+    boundary := kvist.ownership_ir_add_block(&graph)
+    kvist.ownership_ir_add_event(
+        &graph,
+        entry,
+        {kind = .Acquire, place = 0},
+    )
+    kvist.ownership_ir_add_successor(&graph, entry, boundary)
+
+    scope_exits: [dynamic]kvist.Ownership_IR_Exit
+    defer delete(scope_exits)
+    append(
+        &scope_exits,
+        kvist.Ownership_IR_Exit{
+            kind = .Fallthrough,
+            block = boundary,
+        },
+    )
+    places: [dynamic]kvist.Ownership_IR_Shadow_Place
+    defer delete(places)
+    append(&places, kvist.Ownership_IR_Shadow_Place{
+        place = 0,
+        name = "data",
+        cleanup_head = "delete",
+        cleanup_skip_reason = .Captured_By_Closure,
+        scope_exits = scope_exits,
+    })
+    candidates: [dynamic]kvist.Ownership_IR_Diagnostic_Fact
+    defer delete(candidates)
+    append(&candidates, kvist.Ownership_IR_Diagnostic_Fact{
+        kind = .Aggregate_Result_Fields_Uncertain,
+        subject = "maybe-owned",
+    })
+    shadow := kvist.Ownership_IR_Shadow_Proc{
+        graph = graph,
+        places = places,
+        diagnostic_candidates = candidates,
+    }
+    analysis := kvist.ownership_ir_analyze(graph)
+    defer kvist.ownership_ir_analysis_delete(&analysis)
+    plan := kvist.ownership_ir_build_cleanup_plan(shadow, analysis)
+    defer kvist.ownership_ir_cleanup_plan_delete(&plan)
+
+    testing.expect_value(t, plan.valid, true)
+    testing.expect_value(t, len(plan.diagnostics), 2)
+    if len(plan.diagnostics) == 2 {
+        testing.expect_value(
+            t,
+            plan.diagnostics[0].kind,
+            kvist.Ownership_IR_Diagnostic_Kind.Aggregate_Result_Fields_Uncertain,
+        )
+        testing.expect_value(t, plan.diagnostics[0].subject, "maybe-owned")
+        testing.expect_value(
+            t,
+            plan.diagnostics[1].kind,
+            kvist.Ownership_IR_Diagnostic_Kind.Automatic_Cleanup_Skipped,
+        )
+        testing.expect_value(
+            t,
+            plan.diagnostics[1].reason,
+            kvist.Ownership_IR_Cleanup_Skip_Reason.Captured_By_Closure,
+        )
+        testing.expect_value(t, plan.diagnostics[1].subject, "data")
+    }
+}
+
+@(test)
+ownership_ir_converges_through_loop :: proc(t: ^testing.T) {
+    graph := kvist.Ownership_IR_Proc{
+        place_count = 1,
+        entry = 0,
+    }
+    defer kvist.ownership_ir_proc_delete(&graph)
+    entry := kvist.ownership_ir_add_block(&graph)
+    loop := kvist.ownership_ir_add_block(&graph)
+    exit := kvist.ownership_ir_add_block(&graph)
+    kvist.ownership_ir_add_event(&graph, entry, {kind = .Acquire, place = 0})
+    kvist.ownership_ir_add_event(&graph, loop, {kind = .Borrow, place = 0})
+    kvist.ownership_ir_add_successor(&graph, entry, loop)
+    kvist.ownership_ir_add_successor(&graph, loop, loop)
+    kvist.ownership_ir_add_successor(&graph, loop, exit)
+    analysis := kvist.ownership_ir_analyze(graph)
+    defer kvist.ownership_ir_analysis_delete(&analysis)
+
+    testing.expect_value(t, analysis.valid, true)
+    testing.expect_value(t, analysis.converged, true)
+    testing.expect_value(
+        t,
+        kvist.ownership_ir_cleanup_need(analysis.blocks[2].entry[0]),
+        kvist.Ownership_IR_Cleanup_Need.Always,
+    )
+}
+
+@(test)
+ownership_ir_value_liveness_keeps_scheduled_cleanup_usable :: proc(
+    t: ^testing.T,
+) {
+    graph := kvist.Ownership_IR_Proc{
+        place_count = 1,
+        entry = 0,
+    }
+    defer kvist.ownership_ir_proc_delete(&graph)
+    block := kvist.ownership_ir_add_block(&graph)
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Acquire, place = 0, conditional = true},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Schedule_Destroy, place = 0},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Borrow, place = 0},
+    )
+
+    cleanup := kvist.ownership_ir_analyze(graph)
+    defer kvist.ownership_ir_analysis_delete(&cleanup)
+    values := kvist.ownership_ir_analyze_value_liveness(graph)
+    defer kvist.ownership_ir_analysis_delete(&values)
+
+    testing.expect_value(t, cleanup.blocks[block].exit[0].may_live, false)
+    testing.expect_value(t, values.blocks[block].exit[0].may_live, true)
+    testing.expect_value(t, values.blocks[block].exit[0].must_live, true)
+}
+
+@(test)
+ownership_ir_diagnoses_discarded_but_not_destroyed_transients :: proc(
+    t: ^testing.T,
+) {
+    graph := kvist.Ownership_IR_Proc{
+        place_count = 2,
+        entry = 0,
+    }
+    defer kvist.ownership_ir_proc_delete(&graph)
+    block := kvist.ownership_ir_add_block(&graph)
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Acquire, place = 0},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Discard, place = 0},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Acquire, place = 1},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Destroy, place = 1},
+    )
+
+    places: [dynamic]kvist.Ownership_IR_Shadow_Place
+    defer delete(places)
+    append(
+        &places,
+        kvist.Ownership_IR_Shadow_Place{
+            place = 0,
+            name = "opaque-result",
+            diagnose_discarded_result = true,
+        },
+        kvist.Ownership_IR_Shadow_Place{
+            place = 1,
+            name = "native-result",
+            diagnose_discarded_result = true,
+        },
+    )
+    shadow := kvist.Ownership_IR_Shadow_Proc{
+        graph = graph,
+        places = places,
+    }
+    cleanup := kvist.ownership_ir_analyze(graph)
+    defer kvist.ownership_ir_analysis_delete(&cleanup)
+    values := kvist.ownership_ir_analyze_value_liveness(graph)
+    defer kvist.ownership_ir_analysis_delete(&values)
+    plan := kvist.ownership_ir_build_cleanup_plan(shadow, cleanup)
+    defer kvist.ownership_ir_cleanup_plan_delete(&plan)
+    kvist.ownership_ir_append_value_diagnostics(shadow, values, &plan)
+
+    testing.expect_value(
+        t,
+        kvist.ownership_ir_cleanup_need(cleanup.blocks[block].exit[0]),
+        kvist.Ownership_IR_Cleanup_Need.None,
+    )
+    testing.expect_value(
+        t,
+        kvist.ownership_ir_cleanup_need(cleanup.blocks[block].exit[1]),
+        kvist.Ownership_IR_Cleanup_Need.None,
+    )
+    testing.expect_value(t, len(plan.diagnostics), 1)
+    if len(plan.diagnostics) == 1 {
+        testing.expect_value(
+            t,
+            plan.diagnostics[0].kind,
+            kvist.Ownership_IR_Diagnostic_Kind.Discarded_Result,
+        )
+        testing.expect_value(t, plan.diagnostics[0].subject, "opaque-result")
+    }
+}
+
+@(test)
+ownership_ir_shadow_lowers_real_resource_control_flow :: proc(t: ^testing.T) {
+    source := `(package main)
+(import os "core:os")
+
+(defn read-wrapper [path: string] -> [data: []byte, err: os.Error]
+  (os.read_entire_file path context.allocator))
+
+(defn close-wrapper [file: ^os.File]
+  (os.close file))
+
+(defn direct-read [path: string] -> int
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (if (= err nil) (count data) 0)))
+
+(defn simple-read [path: string] -> int
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (count data)))
+
+(defn wrapped-read [path: string] -> int
+  (let [[data err] (read-wrapper path)]
+    (if (= err nil) (count data) 0)))
+
+(defn direct-open [path: string] -> bool
+  (let [[file err] (os.open path)]
+    (= err nil)))
+
+(defn transfer-read [path: string] -> []byte
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    data))
+
+(defn alias-transfer [path: string] -> []byte
+  (let [[data err] (os.read_entire_file path context.allocator)
+        alias data]
+    alias))
+
+(defn explicit-close [path: string] -> bool
+  (let [[file err] (os.open path)]
+    (os.close file)
+    (= err nil)))
+
+(defn deferred-read [path: string] -> int
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (defer (delete data))
+    (if (= err nil) (count data) 0)))
+
+(defn deferred-close [path: string] -> bool
+  (let [[file err] (os.open path)]
+    (defer (os.close file))
+    (= err nil)))
+
+(defn wrapped-close [path: string] -> bool
+  (let [[file err] (os.open path)]
+    (close-wrapper file)
+    (= err nil)))
+
+(defn errdeferred-read [path: string] -> [data: []byte, err: os.Error]
+  (let [[data err] (read-wrapper path) :or-return :errdefer]
+    (return data err)))
+
+(defn split-return [left: string, right: string, choose-left?: bool] -> []byte
+  (let [[left-data left-err] (os.read_entire_file left context.allocator)
+        [right-data right-err] (os.read_entire_file right context.allocator)]
+    (if choose-left? (return left-data))
+    right-data))
+
+(defn loop-cleanup [path: string, stop?: bool] -> int
+  (while true
+    (let [[data err] (os.read_entire_file path context.allocator)]
+      (if stop? (break))
+      (delete data)
+      (continue)))
+  0)
+
+(defn fallthrough-cleanup [path: string, transfer?: bool] -> []byte
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (if transfer? (return data))
+    (discard (count data)))
+  nil)
+
+(defn branch-delete [path: string, release?: bool] -> int
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (if release? (delete data) 0)
+    1))`
+
+    report, err, ok := kvist.ownership_ir_shadow_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(report)
+
+    output, compile_err, compiled := kvist.compile_source(source)
+    testing.expect_value(t, compiled, true)
+    if !compiled {
+        testing.expect_value(t, compile_err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(
+        t,
+        strings.contains(report, "direct_read\tdata\tengine=always\tlegacy=always\tmatch=true\tcleanup=delete"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "simple_read\tdata\tengine=always\tlegacy=always\tmatch=true\tcleanup=delete\tscheduled=0\ttransfers=0\texits=1\tplan-always=1\tplan-conditional=0\tplan-none=0\tplacement=scope-defer\tadoptable=true"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "direct_read\tdata\tengine=always\tlegacy=always\tmatch=true\tcleanup=delete\tscheduled=0\ttransfers=0\texits=2\tplan-always=2\tplan-conditional=0\tplan-none=0\tplacement=scope-defer\tadoptable=true"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "wrapped_read\tdata\tengine=always\tlegacy=always\tmatch=true\tcleanup=delete"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "direct_open\tfile\tengine=conditional\tlegacy=conditional\tmatch=true\tcleanup=os.close\tscheduled=0\ttransfers=0\texits=1\tplan-always=0\tplan-conditional=1\tplan-none=0\tplacement=scope-defer\tadoptable=true\tboundaries="),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "transfer_read\tdata\tengine=none\tlegacy=none\tmatch=true\tcleanup=delete"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "alias_transfer\tdata\tengine=none\tlegacy=none\tmatch=true\tcleanup=delete"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "explicit_close\tfile\tengine=none\tlegacy=none\tmatch=true\tcleanup=os.close"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "deferred_read\tdata\tengine=none\tlegacy=none\tmatch=true\tcleanup=delete\tscheduled=1\ttransfers=0"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "deferred_close\tfile\tengine=none\tlegacy=none\tmatch=true\tcleanup=os.close\tscheduled=1\ttransfers=0"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "wrapped_close\tfile\tengine=none\tlegacy=none\tmatch=true\tcleanup=os.close\tscheduled=0\ttransfers=1"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "errdeferred_read\tdata\tengine=none\tlegacy=none\tmatch=true\tcleanup=delete\tscheduled=1\ttransfers=0"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "split_return\tleft_data\tengine=conditional"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "split_return\tright_data\tengine=conditional"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "loop_cleanup\tdata\tengine=conditional"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "cleanup=delete\tscheduled=0\ttransfers=0\texits=2\tplan-always=1\tplan-conditional=0\tplan-none=1\tplacement=per-exit\tadoptable=true\tboundaries="),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "/break/always"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "/continue/none"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "fallthrough_cleanup\tdata\tengine=conditional\tlegacy=none\tmatch=false\tcleanup=delete\tscheduled=0\ttransfers=0\texits=2\tplan-always=1\tplan-conditional=0\tplan-none=1\tplacement=per-exit\tadoptable=true\tboundaries="),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "/fallthrough/always"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(report, "branch_delete\tdata\tengine=conditional\tlegacy=none\tmatch=false\tcleanup=delete"),
+        true,
+    )
+}
+
+@(test)
+compiler_adopts_validated_ownership_plans :: proc(t: ^testing.T) {
+    source := `(package main)
+(import os "core:os")
+
+(defn read-once [path: string] -> int
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (count data)))
+
+(defn open-once [path: string] -> bool
+  (let [[file err] (os.open path)]
+    (= err nil)))
+
+(defn branched-read [path: string] -> int
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (if (= err nil) (count data) 0)))
+
+(defn branched-open [path: string] -> bool
+  (let [[file err] (os.open path)]
+    (if (= err nil) (!= file nil) false)))
+
+(defn mixed-loop [path: string, stop?: bool] -> int
+  (while true
+    (let [[loop-data loop-err] (os.read_entire_file path context.allocator)]
+      (if stop? (break))
+      (delete loop-data)
+      (continue)))
+  0)
+
+(defn mixed-continue [path: string, stop?: bool] -> int
+  (while true
+    (let [[continue-data continue-err] (os.read_entire_file path context.allocator)]
+      (if stop?
+        (do
+          (delete continue-data)
+          (break)))
+      (continue)))
+  0)
+
+(defn nested-loop [left-path: string, right-path: string, stop?: bool] -> int
+  (while true
+    (let [[left-data left-err] (os.read_entire_file left-path context.allocator)
+          [right-data right-err] (os.read_entire_file right-path context.allocator)]
+      (if stop? (break))
+      (delete right-data)
+      (delete left-data)
+      (continue)))
+  0)
+
+(defn return-choice [path: string, transfer?: bool] -> []byte
+  (let [[return-data return-err] (os.read_entire_file path context.allocator)]
+    (if transfer?
+      (return return-data)
+      (return nil))))
+
+(defn return-pair [path: string, transfer?: bool] -> [data: []byte, ok: bool]
+  (let [[pair-data pair-err] (os.read_entire_file path context.allocator)]
+    (if transfer?
+      (return pair-data true)
+      (return nil false))))
+
+(defn return-two [left-path: string, right-path: string, transfer?: bool] -> [left: []byte, right: []byte]
+  (let [[return-left return-left-err] (os.read_entire_file left-path context.allocator)
+        [return-right return-right-err] (os.read_entire_file right-path context.allocator)]
+    (if transfer?
+      (return return-left return-right)
+      (return nil nil))))
+
+(defn tail-choice [path: string, transfer?: bool] -> []byte
+  (let [[tail-data tail-err] (os.read_entire_file path context.allocator)]
+    (if transfer?
+      tail-data
+      nil)))
+
+(defn empty-bytes [] -> []byte
+  nil)
+
+(defn tail-call-choice [path: string, transfer?: bool] -> []byte
+  (let [[call-data call-err] (os.read_entire_file path context.allocator)]
+    (if transfer?
+      call-data
+      (empty-bytes))))
+
+(defn return-file-choice [path: string, transfer?: bool] -> ^os.File
+  (let [[return-file return-file-err] (os.open path)]
+    (if transfer?
+      (return return-file)
+      (return nil))))
+
+(defn conditional-loop [path: string, stop?: bool] -> int
+  (while true
+    (let [[loop-file loop-file-err] (os.open path)]
+      (if stop? (break))
+      (if (= loop-file-err nil)
+        (do
+          (os.close loop-file)
+          (continue))
+        (continue))))
+  0)
+
+(defn conditional-loop-lifo [left-path: string, right-path: string, stop?: bool] -> int
+  (while true
+    (let [[loop-left loop-left-err] (os.open left-path)
+          [loop-right loop-right-err] (os.open right-path)]
+      (if stop? (break))
+      (if (= loop-right-err nil)
+        (do
+          (os.close loop-right)
+          (if (= loop-left-err nil)
+            (do
+              (os.close loop-left)
+              (break))
+            (break)))
+        (if (= loop-left-err nil)
+          (do
+            (os.close loop-left)
+            (break))
+          (break)))))
+  0)
+
+(defn mixed-edge-kinds [path: string, transfer?: bool, stop?: bool] -> []byte
+  (while true
+    (let [[mixed-data mixed-err] (os.read_entire_file path context.allocator)]
+      (if transfer? (return mixed-data))
+      (if stop? (break))
+      (delete mixed-data)
+      (continue)))
+  nil)
+
+(defn fallthrough-edge [path: string, transfer?: bool] -> []byte
+  (let [[fallthrough-data fallthrough-err] (os.read_entire_file path context.allocator)]
+    (if transfer? (return fallthrough-data))
+    (discard (count fallthrough-data)))
+  nil)
+
+(defn conditional-fallthrough-edge [path: string, transfer?: bool] -> ^os.File
+  (let [[fallthrough-file fallthrough-file-err] (os.open path)]
+    (if transfer? (return fallthrough-file))
+    (discard fallthrough-file-err))
+  nil)
+
+(defn loop-fallthrough-edge [path: string, transfer?: bool] -> []byte
+  (while true
+    (let [[loop-fallthrough-data loop-fallthrough-err] (os.read_entire_file path context.allocator)]
+      (if transfer? (return loop-fallthrough-data))
+      (discard (count loop-fallthrough-data))))
+  nil)
+
+(defn merged-owner-state [path: string, transfer?: bool, release?: bool] -> []byte
+  (let [[merged-data merged-err] (os.read_entire_file path context.allocator)]
+    (if transfer? (return merged-data))
+    (if release? (delete merged-data))
+    (discard merged-err))
+  nil)
+
+(defn merged-custom-owner-state [path: string, transfer?: bool, release?: bool] -> ^os.File
+  (let [[merged-file merged-file-err] (os.open path)]
+    (if transfer? (return merged-file))
+    (if release? (os.close merged-file))
+    (discard merged-file-err))
+  nil)
+
+(defn consume-bytes [data: []byte]
+  (delete data))
+
+(defstruct Owned-Bytes [data: []byte])
+
+(defn transferred-owner-state [path: string, return?: bool, consume?: bool] -> []byte
+  (let [[transferred-data transferred-err] (os.read_entire_file path context.allocator)]
+    (if return? (return transferred-data))
+    (if consume? (consume-bytes transferred-data))
+    (discard transferred-err))
+  nil)
+
+(defn stored-owner-state [path: string, return?: bool, store?: bool] -> []byte
+  (defvar stored-slot: []byte nil)
+  (let [[stored-data stored-err] (os.read_entire_file path context.allocator)]
+    (if return? (return stored-data))
+    (if store? (set! stored-slot stored-data))
+    (discard stored-err))
+  (delete stored-slot)
+  nil)
+
+(defn structured-owner-state [path: string, return?: bool, store?: bool] -> []byte
+  (let [[structured-data structured-err] (os.read_entire_file path context.allocator)]
+    (if return? (return structured-data))
+    (if store?
+      (Owned-Bytes :data structured-data)
+      (discard 0))
+    (discard structured-err))
+  nil)
+
+(defn discarded-empty-struct []
+  (Owned-Bytes :data nil))
+
+(defn bound-structured-owner [path: string] -> int
+  (let [[bound-data bound-err] (os.read_entire_file path context.allocator)]
+    (let [bound-box (Owned-Bytes :data bound-data)]
+      (discard (count bound-box.data)))
+    (discard bound-err))
+  0)
+
+(defn manually-cleaned-structured-owner [path: string] -> int
+  (let [[manual-data manual-err] (os.read_entire_file path context.allocator)]
+    (let [manual-box (Owned-Bytes :data manual-data)]
+      (delete manual-box.data))
+    (discard manual-err))
+  0)
+
+(defn conditionally-cleaned-structured-owner [path: string, release?: bool] -> int
+  (let [[conditional-data conditional-err] (os.read_entire_file path context.allocator)]
+    (let [conditional-box (Owned-Bytes :data conditional-data)]
+      (if release? (delete conditional-box.data)))
+    (discard conditional-err))
+  0)
+
+(defn shadowed-structured-owners [left-path: string, right-path: string] -> int
+  (let [[outer-structured-data outer-structured-err] (os.read_entire_file left-path context.allocator)]
+    (let [shadow-box (Owned-Bytes :data outer-structured-data)]
+      (let [[inner-structured-data inner-structured-err] (os.read_entire_file right-path context.allocator)
+            shadow-box (Owned-Bytes :data inner-structured-data)]
+        (discard (count shadow-box.data))
+        (discard inner-structured-err))
+      (discard (count shadow-box.data)))
+    (discard outer-structured-err))
+  0)
+
+(defn make-owned-bytes [path: string] -> Owned-Bytes
+  (let [[factory-data factory-err] (os.read_entire_file path context.allocator)]
+    (discard factory-err)
+    (Owned-Bytes :data factory-data)))
+
+(defn forward-owned-bytes [path: string] -> Owned-Bytes
+  (make-owned-bytes path))
+
+(defn use-returned-owner [path: string] -> int
+  (let [returned-box (make-owned-bytes path)]
+    (count returned-box.data)))
+
+(defn use-forwarded-owner [path: string] -> int
+  (let [forwarded-box (forward-owned-bytes path)]
+    (count forwarded-box.data)))
+
+(defn manually-clean-returned-owner [path: string] -> int
+  (let [manual-returned-box (make-owned-bytes path)]
+    (delete manual-returned-box.data)
+    0))
+
+(defn discard-returned-owner [path: string]
+  (make-owned-bytes path))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, result.ownership_plan_adoptions, 34)
+    testing.expect_value(t, strings.contains(result.output, "defer delete(data)"), true)
+    testing.expect_value(t, strings.contains(result.output, "if err == nil"), true)
+    testing.expect_value(t, strings.contains(result.output, "os.close(file)"), true)
+    testing.expect_value(t, strings.count(result.output, "delete(loop_data)"), 2)
+    first_loop_cleanup := strings.index(result.output, "delete(loop_data)")
+    loop_break := strings.index(result.output, "break")
+    second_loop_cleanup := -1
+    if first_loop_cleanup >= 0 {
+        after_first := first_loop_cleanup + len("delete(loop_data)")
+        second_relative := strings.index(
+            result.output[after_first:],
+            "delete(loop_data)",
+        )
+        if second_relative >= 0 {
+            second_loop_cleanup = after_first + second_relative
+        }
+    }
+    testing.expect_value(
+        t,
+        first_loop_cleanup >= 0 &&
+            first_loop_cleanup < loop_break &&
+            loop_break < second_loop_cleanup,
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.count(result.output, "delete(continue_data)"),
+        2,
+    )
+    first_continue_cleanup := strings.index(
+        result.output,
+        "delete(continue_data)",
+    )
+    loop_continue := strings.last_index(result.output, "continue\n")
+    second_continue_cleanup := -1
+    if first_continue_cleanup >= 0 {
+        after_first := first_continue_cleanup + len("delete(continue_data)")
+        second_relative := strings.index(
+            result.output[after_first:],
+            "delete(continue_data)",
+        )
+        if second_relative >= 0 {
+            second_continue_cleanup = after_first + second_relative
+        }
+    }
+    testing.expect_value(
+        t,
+        first_continue_cleanup >= 0 &&
+            first_continue_cleanup < second_continue_cleanup &&
+            second_continue_cleanup < loop_continue,
+        true,
+    )
+    nested_start := strings.index(result.output, "nested_loop :: proc")
+    nested_ordered := false
+    if nested_start >= 0 {
+        nested_output := result.output[nested_start:]
+        first_right := strings.index(nested_output, "delete(right_data)")
+        first_left := strings.index(nested_output, "delete(left_data)")
+        nested_break := strings.index(nested_output, "break")
+        second_right := -1
+        second_left := -1
+        if first_right >= 0 {
+            after_right := first_right + len("delete(right_data)")
+            relative := strings.index(
+                nested_output[after_right:],
+                "delete(right_data)",
+            )
+            if relative >= 0 {
+                second_right = after_right + relative
+            }
+        }
+        if first_left >= 0 {
+            after_left := first_left + len("delete(left_data)")
+            relative := strings.index(
+                nested_output[after_left:],
+                "delete(left_data)",
+            )
+            if relative >= 0 {
+                second_left = after_left + relative
+            }
+        }
+        nested_ordered = first_right >= 0 &&
+                         first_right < first_left &&
+                         first_left < nested_break &&
+                         nested_break < second_right &&
+                         second_right < second_left
+    }
+    testing.expect_value(t, nested_ordered, true)
+    return_start := strings.index(result.output, "return_choice :: proc")
+    return_ordered := false
+    if return_start >= 0 {
+        return_output := result.output[return_start:]
+        transferred := strings.index(return_output, "return return_data")
+        temp_assignment := strings.index(return_output, "kvist_thread_")
+        cleanup := strings.index(return_output, "delete(return_data)")
+        temp_return := strings.last_index(return_output, "return kvist_thread_")
+        return_ordered = transferred >= 0 &&
+                         transferred < temp_assignment &&
+                         temp_assignment < cleanup &&
+                         cleanup < temp_return
+    }
+    testing.expect_value(t, return_ordered, true)
+    testing.expect_value(t, strings.count(result.output, "delete(return_data)"), 1)
+    pair_start := strings.index(result.output, "return_pair :: proc")
+    pair_ordered := false
+    if pair_start >= 0 {
+        pair_output := result.output[pair_start:]
+        transferred := strings.index(pair_output, "return pair_data, true")
+        first_temp := strings.index(pair_output, "kvist_thread_")
+        cleanup := strings.index(pair_output, "delete(pair_data)")
+        temp_return := strings.last_index(pair_output, "return kvist_thread_")
+        pair_ordered = transferred >= 0 &&
+                       transferred < first_temp &&
+                       first_temp < cleanup &&
+                       cleanup < temp_return
+    }
+    testing.expect_value(t, pair_ordered, true)
+    testing.expect_value(t, strings.count(result.output, "delete(pair_data)"), 1)
+    two_start := strings.index(result.output, "return_two :: proc")
+    two_ordered := false
+    if two_start >= 0 {
+        two_output := result.output[two_start:]
+        transferred := strings.index(
+            two_output,
+            "return return_left, return_right",
+        )
+        first_temp := strings.index(two_output, "kvist_thread_")
+        right_cleanup := strings.index(two_output, "delete(return_right)")
+        left_cleanup := strings.index(two_output, "delete(return_left)")
+        temp_return := strings.last_index(two_output, "return kvist_thread_")
+        two_ordered = transferred >= 0 &&
+                      transferred < first_temp &&
+                      first_temp < right_cleanup &&
+                      right_cleanup < left_cleanup &&
+                      left_cleanup < temp_return
+    }
+    testing.expect_value(t, two_ordered, true)
+    testing.expect_value(t, strings.count(result.output, "delete(return_left)"), 1)
+    testing.expect_value(t, strings.count(result.output, "delete(return_right)"), 1)
+    tail_start := strings.index(result.output, "tail_choice :: proc")
+    tail_ordered := false
+    if tail_start >= 0 {
+        tail_output := result.output[tail_start:]
+        transferred := strings.index(tail_output, "return tail_data")
+        temp_assignment := strings.index(tail_output, "kvist_thread_")
+        cleanup := strings.index(tail_output, "delete(tail_data)")
+        temp_return := strings.last_index(tail_output, "return kvist_thread_")
+        tail_ordered = transferred >= 0 &&
+                       transferred < temp_assignment &&
+                       temp_assignment < cleanup &&
+                       cleanup < temp_return
+    }
+    testing.expect_value(t, tail_ordered, true)
+    testing.expect_value(t, strings.count(result.output, "delete(tail_data)"), 1)
+    call_start := strings.index(result.output, "tail_call_choice :: proc")
+    call_ordered := false
+    if call_start >= 0 {
+        call_output := result.output[call_start:]
+        transferred := strings.index(call_output, "return call_data")
+        evaluated := strings.index(call_output, "empty_bytes()")
+        cleanup := strings.index(call_output, "delete(call_data)")
+        temp_return := strings.last_index(call_output, "return kvist_thread_")
+        call_ordered = transferred >= 0 &&
+                       transferred < evaluated &&
+                       evaluated < cleanup &&
+                       cleanup < temp_return
+    }
+    testing.expect_value(t, call_ordered, true)
+    testing.expect_value(t, strings.count(result.output, "delete(call_data)"), 1)
+    file_start := strings.index(result.output, "return_file_choice :: proc")
+    file_ordered := false
+    if file_start >= 0 {
+        file_output := result.output[file_start:]
+        owner_snapshot := strings.index(
+            file_output,
+            ":= return_file_err == nil",
+        )
+        transferred := strings.index(file_output, "return return_file")
+        temp_assignment := strings.index(file_output, "kvist_thread_")
+        guarded_cleanup := strings.index(file_output, "if kvist_owner_")
+        cleanup := strings.index(file_output, "os.close(return_file)")
+        temp_return := strings.last_index(file_output, "return kvist_thread_")
+        file_ordered = owner_snapshot >= 0 &&
+                       owner_snapshot < transferred &&
+                       transferred < temp_assignment &&
+                       temp_assignment < guarded_cleanup &&
+                       guarded_cleanup < cleanup &&
+                       cleanup < temp_return
+    }
+    testing.expect_value(t, file_ordered, true)
+    testing.expect_value(t, strings.count(result.output, "os.close(return_file)"), 1)
+    conditional_lifo_start := strings.index(
+        result.output,
+        "conditional_loop_lifo :: proc",
+    )
+    conditional_loop_start := strings.index(
+        result.output,
+        "conditional_loop :: proc",
+    )
+    conditional_loop_ordered := false
+    if conditional_loop_start >= 0 &&
+       conditional_lifo_start > conditional_loop_start {
+        loop_output := result.output[
+            conditional_loop_start:conditional_lifo_start
+        ]
+        owner_snapshot := strings.index(
+            loop_output,
+            ":= loop_file_err == nil",
+        )
+        first_guard := strings.index(loop_output, "if kvist_owner_")
+        first_cleanup := strings.index(loop_output, "os.close(loop_file)")
+        first_break := strings.index(loop_output, "break")
+        last_guard := strings.last_index(loop_output, "if kvist_owner_")
+        last_cleanup := strings.last_index(loop_output, "os.close(loop_file)")
+        last_continue := strings.last_index(loop_output, "continue")
+        conditional_loop_ordered = owner_snapshot >= 0 &&
+                                   owner_snapshot < first_guard &&
+                                   first_guard < first_cleanup &&
+                                   first_cleanup < first_break &&
+                                   first_break < last_guard &&
+                                   last_guard < last_cleanup &&
+                                   last_cleanup < last_continue
+    }
+    testing.expect_value(t, conditional_loop_ordered, true)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "os.close(loop_file)"),
+        3,
+    )
+    conditional_lifo_ordered := false
+    if conditional_lifo_start >= 0 {
+        lifo_output := result.output[conditional_lifo_start:]
+        left_snapshot := strings.index(
+            lifo_output,
+            ":= loop_left_err == nil",
+        )
+        right_snapshot := strings.index(
+            lifo_output,
+            ":= loop_right_err == nil",
+        )
+        first_right_cleanup := strings.index(
+            lifo_output,
+            "os.close(loop_right)",
+        )
+        first_left_cleanup := strings.index(
+            lifo_output,
+            "os.close(loop_left)",
+        )
+        first_break := strings.index(lifo_output, "break")
+        conditional_lifo_ordered = left_snapshot >= 0 &&
+                                   left_snapshot < right_snapshot &&
+                                   right_snapshot < first_right_cleanup &&
+                                   first_right_cleanup < first_left_cleanup &&
+                                   first_left_cleanup < first_break
+    }
+    testing.expect_value(t, conditional_lifo_ordered, true)
+    mixed_start := strings.index(result.output, "mixed_edge_kinds :: proc")
+    mixed_ordered := false
+    if mixed_start >= 0 {
+        mixed_output := result.output[mixed_start:]
+        transferred := strings.index(mixed_output, "return mixed_data")
+        first_cleanup := strings.index(mixed_output, "delete(mixed_data)")
+        loop_break := strings.index(mixed_output, "break")
+        second_cleanup := strings.last_index(mixed_output, "delete(mixed_data)")
+        loop_continue := strings.last_index(mixed_output, "continue")
+        mixed_ordered = transferred >= 0 &&
+                        transferred < first_cleanup &&
+                        first_cleanup < loop_break &&
+                        loop_break < second_cleanup &&
+                        second_cleanup < loop_continue
+    }
+    testing.expect_value(t, mixed_ordered, true)
+    testing.expect_value(t, strings.count(result.output, "delete(mixed_data)"), 2)
+    fallthrough_start := strings.index(
+        result.output,
+        "fallthrough_edge :: proc",
+    )
+    conditional_fallthrough_start := strings.index(
+        result.output,
+        "conditional_fallthrough_edge :: proc",
+    )
+    fallthrough_ordered := false
+    if fallthrough_start >= 0 &&
+       conditional_fallthrough_start > fallthrough_start {
+        fallthrough_output := result.output[
+            fallthrough_start:conditional_fallthrough_start
+        ]
+        transferred := strings.index(
+            fallthrough_output,
+            "return fallthrough_data",
+        )
+        borrowed := strings.index(fallthrough_output, "len(fallthrough_data)")
+        cleanup := strings.index(
+            fallthrough_output,
+            "delete(fallthrough_data)",
+        )
+        final_return := strings.last_index(fallthrough_output, "return nil")
+        fallthrough_ordered = transferred >= 0 &&
+                              transferred < borrowed &&
+                              borrowed < cleanup &&
+                              cleanup < final_return
+    }
+    testing.expect_value(t, fallthrough_ordered, true)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "delete(fallthrough_data)"),
+        1,
+    )
+    conditional_fallthrough_ordered := false
+    if conditional_fallthrough_start >= 0 {
+        fallthrough_output := result.output[conditional_fallthrough_start:]
+        owner_snapshot := strings.index(
+            fallthrough_output,
+            ":= fallthrough_file_err == nil",
+        )
+        transferred := strings.index(
+            fallthrough_output,
+            "return fallthrough_file",
+        )
+        guarded_cleanup := strings.index(fallthrough_output, "if kvist_owner_")
+        cleanup := strings.index(
+            fallthrough_output,
+            "os.close(fallthrough_file)",
+        )
+        final_return := strings.last_index(fallthrough_output, "return nil")
+        conditional_fallthrough_ordered = owner_snapshot >= 0 &&
+                                          owner_snapshot < transferred &&
+                                          transferred < guarded_cleanup &&
+                                          guarded_cleanup < cleanup &&
+                                          cleanup < final_return
+    }
+    testing.expect_value(t, conditional_fallthrough_ordered, true)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "os.close(fallthrough_file)"),
+        1,
+    )
+    loop_fallthrough_start := strings.index(
+        result.output,
+        "loop_fallthrough_edge :: proc",
+    )
+    loop_fallthrough_ordered := false
+    if loop_fallthrough_start >= 0 {
+        loop_output := result.output[loop_fallthrough_start:]
+        transferred := strings.index(
+            loop_output,
+            "return loop_fallthrough_data",
+        )
+        borrowed := strings.index(
+            loop_output,
+            "len(loop_fallthrough_data)",
+        )
+        cleanup := strings.index(
+            loop_output,
+            "delete(loop_fallthrough_data)",
+        )
+        loop_fallthrough_ordered = transferred >= 0 &&
+                                   transferred < borrowed &&
+                                   borrowed < cleanup
+    }
+    testing.expect_value(t, loop_fallthrough_ordered, true)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "delete(loop_fallthrough_data)"),
+        1,
+    )
+    merged_start := strings.index(
+        result.output,
+        "merged_owner_state :: proc",
+    )
+    merged_custom_start := strings.index(
+        result.output,
+        "merged_custom_owner_state :: proc",
+    )
+    transferred_start := strings.index(
+        result.output,
+        "transferred_owner_state :: proc",
+    )
+    stored_start := strings.index(
+        result.output,
+        "stored_owner_state :: proc",
+    )
+    structured_start := strings.index(
+        result.output,
+        "structured_owner_state :: proc",
+    )
+    merged_ordered := false
+    if merged_start >= 0 && merged_custom_start > merged_start {
+        merged_output := result.output[merged_start:merged_custom_start]
+        owner_initialization := strings.index(merged_output, ":= true")
+        first_cleanup := strings.index(merged_output, "delete(merged_data)")
+        owner_clear := strings.index(merged_output, "= false")
+        cleanup_guard := strings.last_index(merged_output, "if kvist_owner_")
+        second_cleanup := strings.last_index(
+            merged_output,
+            "delete(merged_data)",
+        )
+        merged_ordered = owner_initialization >= 0 &&
+                         owner_initialization < first_cleanup &&
+                         first_cleanup < owner_clear &&
+                         owner_clear < cleanup_guard &&
+                         cleanup_guard < second_cleanup
+    }
+    testing.expect_value(t, merged_ordered, true)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "delete(merged_data)"),
+        2,
+    )
+    merged_custom_ordered := false
+    if merged_custom_start >= 0 && transferred_start > merged_custom_start {
+        merged_output := result.output[merged_custom_start:transferred_start]
+        owner_initialization := strings.index(
+            merged_output,
+            ":= merged_file_err == nil",
+        )
+        first_cleanup := strings.index(
+            merged_output,
+            "os.close(merged_file)",
+        )
+        owner_clear := strings.index(merged_output, "= false")
+        cleanup_guard := strings.last_index(merged_output, "if kvist_owner_")
+        second_cleanup := strings.last_index(
+            merged_output,
+            "os.close(merged_file)",
+        )
+        merged_custom_ordered = owner_initialization >= 0 &&
+                                owner_initialization < first_cleanup &&
+                                first_cleanup < owner_clear &&
+                                owner_clear < cleanup_guard &&
+                                cleanup_guard < second_cleanup
+    }
+    testing.expect_value(t, merged_custom_ordered, true)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "os.close(merged_file)"),
+        2,
+    )
+    transferred_ordered := false
+    if transferred_start >= 0 && stored_start > transferred_start {
+        transferred_output := result.output[transferred_start:stored_start]
+        owner_initialization := strings.index(transferred_output, ":= true")
+        transferred_return := strings.index(
+            transferred_output,
+            "return transferred_data",
+        )
+        consuming_call := strings.index(
+            transferred_output,
+            "consume_bytes(",
+        )
+        owner_clear := strings.index(transferred_output, "= false")
+        cleanup_guard := strings.last_index(
+            transferred_output,
+            "if kvist_owner_",
+        )
+        cleanup := strings.index(
+            transferred_output,
+            "delete(transferred_data)",
+        )
+        transferred_ordered = owner_initialization >= 0 &&
+                              owner_initialization < transferred_return &&
+                              transferred_return < consuming_call &&
+                              consuming_call < owner_clear &&
+                              owner_clear < cleanup_guard &&
+                              cleanup_guard < cleanup
+    }
+    testing.expect_value(t, transferred_ordered, true)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "delete(transferred_data)"),
+        1,
+    )
+    stored_ordered := false
+    if stored_start >= 0 && structured_start > stored_start {
+        stored_output := result.output[stored_start:structured_start]
+        owner_initialization := strings.index(stored_output, ":= true")
+        stored_return := strings.index(stored_output, "return stored_data")
+        managed_assignment := strings.index(stored_output, "stored_slot = ")
+        owner_clear := strings.index(stored_output, "= false")
+        cleanup_guard := strings.last_index(stored_output, "if kvist_owner_")
+        local_cleanup := strings.index(stored_output, "delete(stored_data)")
+        stored_cleanup := strings.index(stored_output, "delete(stored_slot)")
+        stored_ordered = owner_initialization >= 0 &&
+                         owner_initialization < stored_return &&
+                         stored_return < managed_assignment &&
+                         managed_assignment < owner_clear &&
+                         owner_clear < cleanup_guard &&
+                         cleanup_guard < local_cleanup &&
+                         local_cleanup < stored_cleanup
+    }
+    testing.expect_value(t, stored_ordered, true)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "delete(stored_data)"),
+        1,
+    )
+    structured_ordered := false
+    if structured_start >= 0 {
+        structured_output := result.output[structured_start:]
+        owner_initialization := strings.index(structured_output, ":= true")
+        structured_return := strings.index(
+            structured_output,
+            "return structured_data",
+        )
+        construction := strings.index(
+            structured_output,
+            ":= Owned_Bytes{data = ",
+        )
+        owner_clear := strings.index(structured_output, "= false")
+        aggregate_cleanup := strings.index(
+            structured_output,
+            "delete(kvist_thread_",
+        )
+        cleanup_guard := strings.last_index(
+            structured_output,
+            "if kvist_owner_",
+        )
+        cleanup := strings.index(
+            structured_output,
+            "delete(structured_data)",
+        )
+        structured_ordered = owner_initialization >= 0 &&
+                             owner_initialization < structured_return &&
+                             structured_return < construction &&
+                             construction < owner_clear &&
+                             owner_clear < aggregate_cleanup &&
+                             aggregate_cleanup < cleanup_guard &&
+                             cleanup_guard < cleanup
+    }
+    testing.expect_value(t, structured_ordered, true)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "delete(structured_data)"),
+        1,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "_ = Owned_Bytes{data = nil}"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(bound_box.data)"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(manual_box.data)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.count(result.output, "delete(manual_box.data)"),
+        1,
+    )
+    conditional_start := strings.index(
+        result.output,
+        "conditionally_cleaned_structured_owner :: proc",
+    )
+    conditional_cleanup_ordered := false
+    if conditional_start >= 0 {
+        conditional_output := result.output[conditional_start:]
+        field_binding := strings.index(
+            conditional_output,
+            "conditional_box := Owned_Bytes{data = ",
+        )
+        field_owner := strings.index(conditional_output, ":= true")
+        deferred_cleanup := strings.index(
+            conditional_output,
+            "&(conditional_box.data)",
+        )
+        explicit_cleanup := strings.index(
+            conditional_output,
+            "delete(conditional_box.data)",
+        )
+        owner_clear := strings.last_index(conditional_output, "= false")
+        conditional_cleanup_ordered = field_binding >= 0 &&
+                                      field_binding < field_owner &&
+                                      field_owner < deferred_cleanup &&
+                                      deferred_cleanup < explicit_cleanup &&
+                                      explicit_cleanup < owner_clear
+    }
+    testing.expect_value(t, conditional_cleanup_ordered, true)
+    shadowed_start := strings.index(
+        result.output,
+        "shadowed_structured_owners :: proc",
+    )
+    shadowed_cleanup_count := 0
+    if shadowed_start >= 0 {
+        shadowed_cleanup_count = strings.count(
+            result.output[shadowed_start:],
+            "defer delete(shadow_box.data)",
+        )
+    }
+    testing.expect_value(t, shadowed_cleanup_count, 2)
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(returned_box.data)"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(forwarded_box.data)"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "defer delete(manual_returned_box.data)",
+        ),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.count(result.output, "delete(manual_returned_box.data)"),
+        1,
+    )
+    discard_returned_start := strings.index(
+        result.output,
+        "discard_returned_owner :: proc",
+    )
+    discard_returned_cleanup := false
+    if discard_returned_start >= 0 {
+        discard_output := result.output[discard_returned_start:]
+        materialized := strings.index(
+            discard_output,
+            ":= make_owned_bytes(path)",
+        )
+        cleanup := strings.index(discard_output, "delete(kvist_thread_")
+        discard_returned_cleanup = materialized >= 0 &&
+                                     materialized < cleanup &&
+                                     strings.contains(
+                                         discard_output,
+                                         ".data)",
+                                     )
+    }
+    testing.expect_value(t, discard_returned_cleanup, true)
+}
+
+@(test)
+warn_when_native_aggregate_field_cleanup_is_unsafe :: proc(t: ^testing.T) {
+    source := `(package main)
+(import os "core:os")
+
+(defstruct Owned-Bytes [data: []byte])
+
+(defn replace-field [path: string, replacement: []byte] -> int
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (let [box (Owned-Bytes :data data)]
+      (set! box.data replacement)
+      (discard (count box.data)))
+    (discard err))
+  0)`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(box.data)"),
+        false,
+    )
+    testing.expect_value(t, len(result.warnings), 1)
+    if len(result.warnings) == 1 {
+        testing.expect_value(
+            t,
+            result.warnings[0].message,
+            "automatic cleanup for owned result `data` was skipped because it is stored in an aggregate or mutable place; clean it up explicitly after its last use or transfer ownership",
+        )
+        testing.expect_value(
+            t,
+            result.warnings[0].code,
+            kvist.Compile_Warning_Code.Ownership_Automatic_Cleanup_Skipped,
+        )
+    }
+}
+
+@(test)
+warn_when_aggregate_result_field_ownership_differs_by_branch :: proc(
+    t: ^testing.T,
+) {
+    source := `(package main)
+(import os "core:os")
+
+(defstruct Owned-Bytes [data: []byte])
+
+(defn maybe-owned-bytes [path: string, borrowed: []byte, own?: bool] -> Owned-Bytes
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (discard err)
+    (if own?
+      (Owned-Bytes :data data)
+      (Owned-Bytes :data borrowed))))
+
+(defn use [path: string, borrowed: []byte, own?: bool] -> int
+  (let [box (maybe-owned-bytes path borrowed own?)]
+    (count box.data)))
+
+(defn early-maybe-owned-bytes [path: string, borrowed: []byte, own?: bool] -> Owned-Bytes
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (discard err)
+    (if own?
+      (return (Owned-Bytes :data data)))
+    (Owned-Bytes :data borrowed)))
+
+(defn use-early [path: string, borrowed: []byte, own?: bool] -> int
+  (let [early-box (early-maybe-owned-bytes path borrowed own?)]
+    (count early-box.data)))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(box.data)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(early_box.data)"),
+        false,
+    )
+    testing.expect_value(t, len(result.warnings), 2)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "delete(data)"),
+        2,
+    )
+    aggregate_contract_warning_count := 0
+    for warning in result.warnings {
+        testing.expect_value(
+            t,
+            warning.code,
+            kvist.Compile_Warning_Code.Ownership_Automatic_Cleanup_Skipped,
+        )
+        if strings.contains(
+            warning.message,
+            "ownership of fields in result",
+        ) {
+            aggregate_contract_warning_count += 1
+        }
+    }
+    testing.expect_value(t, aggregate_contract_warning_count, 2)
+}
+
+@(test)
+infer_aggregate_result_ownership_through_local_bindings :: proc(
+    t: ^testing.T,
+) {
+    source := `(package main)
+(import os "core:os")
+
+(defstruct Owned-Bytes [data: []byte])
+
+(defn make-local-owned-bytes [path: string] -> Owned-Bytes
+  (let [[data err] (os.read_entire_file path context.allocator)
+        boxed (Owned-Bytes :data data)]
+    (discard err)
+    (discard (count boxed.data))
+    (return boxed)))
+
+(defn make-aliased-owned-bytes [path: string] -> Owned-Bytes
+  (let [[data err] (os.read_entire_file path context.allocator)
+        boxed (Owned-Bytes :data data)
+        forwarded boxed]
+    (discard err)
+    forwarded))
+
+(defn use-local-owner [path: string] -> int
+  (let [local-result (make-local-owned-bytes path)]
+    (count local-result.data)))
+
+(defn use-aliased-owner [path: string] -> int
+  (let [alias-result (make-aliased-owned-bytes path)]
+    (count alias-result.data)))
+
+(defn manually-clean-local-owner [path: string] -> int
+  (let [manual-result (make-local-owned-bytes path)]
+    (delete manual-result.data)
+    0))
+
+(defn discard-local-owner [path: string]
+  (make-local-owned-bytes path))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(local_result.data)"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(alias_result.data)"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(manual_result.data)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.count(result.output, "delete(manual_result.data)"),
+        1,
+    )
+    make_start := strings.index(
+        result.output,
+        "make_local_owned_bytes :: proc",
+    )
+    use_start := strings.index(result.output, "use_local_owner :: proc")
+    testing.expect(t, make_start >= 0 && use_start > make_start)
+    if make_start >= 0 && use_start > make_start {
+        maker_output := result.output[make_start:use_start]
+        testing.expect_value(
+            t,
+            strings.contains(maker_output, "defer delete(boxed.data)"),
+            false,
+        )
+    }
+    discard_start := strings.index(
+        result.output,
+        "discard_local_owner :: proc",
+    )
+    discard_cleanup := false
+    if discard_start >= 0 {
+        discard_output := result.output[discard_start:]
+        materialized := strings.index(
+            discard_output,
+            ":= make_local_owned_bytes(path)",
+        )
+        cleanup := strings.index(discard_output, "delete(kvist_thread_")
+        discard_cleanup = materialized >= 0 &&
+                          materialized < cleanup &&
+                          strings.contains(discard_output, ".data)")
+    }
+    testing.expect_value(t, discard_cleanup, true)
+}
+
+@(test)
+warn_when_returned_aggregate_owned_field_is_replaced :: proc(t: ^testing.T) {
+    source := `(package main)
+(import os "core:os")
+
+(defstruct Owned-Bytes [data: []byte])
+
+(defn replace-owned-field [path: string, borrowed: []byte] -> Owned-Bytes
+  (let [[data err] (os.read_entire_file path context.allocator)
+        boxed (Owned-Bytes :data data)]
+    (discard err)
+    (set! boxed.data borrowed)
+    boxed))
+
+(defn use [path: string, borrowed: []byte] -> int
+  (let [box (replace-owned-field path borrowed)]
+    (count box.data)))
+
+(defn consume-bytes [value: []byte] -> int
+  (delete value)
+  0)
+
+(defn transfer-owned-field [path: string] -> Owned-Bytes
+  (let [[data err] (os.read_entire_file path context.allocator)
+        boxed (Owned-Bytes :data data)
+        consumed (consume-bytes boxed.data)]
+    (discard err)
+    (discard consumed)
+    boxed))
+
+(defn use-transferred [path: string] -> int
+  (let [transferred-box (transfer-owned-field path)]
+    (count transferred-box.data)))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(box.data)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "defer delete(transferred_box.data)",
+        ),
+        false,
+    )
+    aggregate_contract_warning_count := 0
+    for warning in result.warnings {
+        if warning.code ==
+           kvist.Compile_Warning_Code.Ownership_Automatic_Cleanup_Skipped &&
+           strings.contains(
+               warning.message,
+               "cannot be proven consistent across returns and mutations",
+           ) {
+            aggregate_contract_warning_count += 1
+        }
+    }
+    testing.expect_value(t, aggregate_contract_warning_count, 2)
+}
+
+@(test)
+reject_deferred_string_passed_to_consuming_proc :: proc(t: ^testing.T) {
+    source := `(package main)
+(import fmt "core:fmt")
+
+(defn consume [value: string]
+  (delete value))
+
+(defn broken []
+  (let [value (fmt.aprintf "sid=%s" "abc") :defer]
+    (consume value)))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, false)
+    delete(output)
+    defer delete(err.message)
+    testing.expect_value(
+        t,
+        err.message,
+        "`value` has `:defer` cleanup, but ownership is transferred before scope exit; remove `:defer` to transfer ownership, or pass an owned copy",
+    )
+}
+
+@(test)
+reject_deferred_string_nested_in_consumed_struct :: proc(t: ^testing.T) {
+    source := `(package main)
+(import fmt "core:fmt")
+
+(defstruct Cookie [value: string])
+(defstruct Response [cookies: [dynamic]Cookie])
+
+(defn new-cookie [value: string] -> Cookie
+  (Cookie :value value))
+
+(defn store-cookie! [response: ^Response, cookie: Cookie]
+  (append (addr response.cookies) cookie))
+
+(defn broken [response: ^Response]
+  (let [value (fmt.aprintf "sid=%s" "abc") :defer]
+    (store-cookie! response (new-cookie value))))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, false)
+    delete(output)
+    defer delete(err.message)
+    testing.expect_value(
+        t,
+        err.message,
+        "`value` has `:defer` cleanup, but ownership is transferred before scope exit; remove `:defer` to transfer ownership, or pass an owned copy",
+    )
+}
+
+@(test)
+reject_deferred_cleanup_after_conditional_transfer :: proc(t: ^testing.T) {
+    source := `(package main)
+(import fmt "core:fmt")
+
+(defn consume [value: string]
+  (delete value))
+
+(defn broken [flag: bool]
+  (let [value (fmt.aprintf "sid=%s" "abc") :defer]
+    (if flag
+      (consume value)
+      (println "kept"))))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, false)
+    delete(output)
+    defer delete(err.message)
+    testing.expect_value(
+        t,
+        err.message,
+        "`value` has `:defer` cleanup, but ownership is transferred before scope exit; remove `:defer` to transfer ownership, or pass an owned copy",
+    )
+}
+
+@(test)
+compile_deferred_string_passed_to_borrowing_proc :: proc(t: ^testing.T) {
+    source := `(package main)
+(import fmt "core:fmt")
+
+(defn inspect [value: string] -> int
+  (count value))
+
+(defn ok [] -> int
+  (let [value (fmt.aprintf "sid=%s" "abc") :defer]
+    (inspect value)))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        defer delete(err.message)
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+    testing.expect_value(t, strings.contains(output, "defer delete(value)"), true)
+    testing.expect_value(t, strings.contains(output, "return inspect(value)"), true)
+}
+
+@(test)
 reject_shadowed_cleanup_for_outer_owned_let_binding :: proc(t: ^testing.T) {
     source := `(package main)
 (import fmt "core:fmt")
@@ -27,7 +2122,7 @@ reject_shadowed_cleanup_for_outer_owned_let_binding :: proc(t: ^testing.T) {
     testing.expect_value(
         t,
         err.message,
-        "fmt.aprintf returns an owned result; bind it so it can be deleted, or return it to transfer ownership",
+        "fmt.aprintf returns an owned result; bind it so it can be cleaned up, or return it to transfer ownership",
     )
 }
 
@@ -498,7 +2593,7 @@ allow_returning_owned_sequence_result :: proc(t: ^testing.T) {
 }
 
 @(test)
-warn_discarded_owned_sequence_result :: proc(t: ^testing.T) {
+delete_discarded_owned_sequence_result :: proc(t: ^testing.T) {
     source := `(package main)
 (import arr "kvist:arr")
 
@@ -519,10 +2614,8 @@ warn_discarded_owned_sequence_result :: proc(t: ^testing.T) {
     defer delete(result.output)
     defer kvist.source_map_slice_delete(result.source_map)
     defer kvist.compile_warning_slice_delete(result.warnings)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from arr.map is discarded; bind it, delete it, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
 
 @(test)
@@ -604,7 +2697,234 @@ warn_discarded_third_party_dynamic_array_result_from_alloc_shape :: proc(t: ^tes
     testing.expect_value(t, strings.contains(result.output, "support__join(xs, ys)"), true)
     testing.expect_value(t, len(result.warnings), 1)
     if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.join is discarded; bind it, delete it, or return it")
+        testing.expect_value(t, result.warnings[0].message, "owned result from support.join is discarded; bind it and clean it up, or return it")
+    }
+}
+
+@(test)
+compile_read_entire_file_result_lifecycle :: proc(t: ^testing.T) {
+    source := `(package main)
+(import os "core:os")
+
+(defn read-wrapper [path: string] -> [data: []byte, err: os.Error]
+  (os.read_entire_file path context.allocator))
+
+(defn direct-count [path: string] -> int
+  (let [[direct-data direct-err] (os.read_entire_file path context.allocator)]
+    (if (= direct-err nil) (count direct-data) 0)))
+
+(defn wrapped-count [path: string] -> int
+  (let [[wrapped-data wrapped-err] (read-wrapper path)]
+    (if (= wrapped-err nil) (count wrapped-data) 0)))
+
+(defn guarded-count [path: string] -> int
+  (if-ok [[guarded-data guarded-err] (os.read_entire_file path context.allocator)]
+    (count guarded-data)
+    0))
+
+(defn guarded-effect [path: string] -> int
+  (let [total 0]
+    (when-ok [[effect-data effect-err] (os.read_entire_file path context.allocator)]
+      (set! total (count effect-data)))
+    total))
+
+(defn count-readable [paths: []string] -> int
+  (let [total 0]
+    (for [path paths]
+      (let [[loop-data err] (os.read_entire_file path context.allocator) :or-continue]
+        (set! total (+ total (count loop-data)))))
+    total))
+
+(defn manual-count [path: string] -> int
+  (let [[manual-data manual-err] (os.read_entire_file path context.allocator)]
+    (defer (delete manual-data))
+    (if (= manual-err nil) (count manual-data) 0)))
+
+(defn transfer-data [path: string] -> []byte
+  (let [[transferred-data transferred-err] (os.read_entire_file path context.allocator)]
+    transferred-data))
+
+(defn forward-result [path: string] -> [forward-data: []byte, err: os.Error]
+  (let [[forward-data err] (os.read_entire_file path context.allocator) :or-return]
+    (return forward-data err)))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "defer delete(direct_data)"), true)
+    testing.expect_value(t, strings.contains(output, "defer delete(wrapped_data)"), true)
+    testing.expect_value(t, strings.contains(output, "defer delete(guarded_data)"), true)
+    testing.expect_value(t, strings.contains(output, "defer delete(effect_data)"), true)
+    testing.expect_value(t, strings.contains(output, "defer delete(loop_data)"), true)
+    testing.expect_value(t, strings.count(output, "defer delete(manual_data)"), 1)
+    testing.expect_value(t, strings.contains(output, "delete(transferred_data)"), false)
+    testing.expect_value(t, strings.contains(output, "delete(forward_data)"), false)
+    testing.expect_value(t, strings.contains(output, "#owned"), false)
+    testing.expect_value(t, strings.contains(output, "#borrowed"), false)
+}
+
+@(test)
+compile_file_handle_result_lifecycle :: proc(t: ^testing.T) {
+    source := `(package main)
+(import os "core:os")
+
+(defn open-wrapper [path: string] -> [file: ^os.File, err: os.Error]
+  (os.open path))
+
+(defn direct-open [path: string] -> bool
+  (let [[direct-file direct-err] (os.open path)]
+    (and (= direct-err nil) (!= direct-file nil))))
+
+(defn wrapped-open [path: string] -> bool
+  (let [[wrapped-file wrapped-err] (open-wrapper path)]
+    (and (= wrapped-err nil) (!= wrapped-file nil))))
+
+(defn create-file [path: string] -> bool
+  (let [[created-file created-err] (os.create path)]
+    (and (= created-err nil) (!= created-file nil))))
+
+(defn clone-file [original: ^os.File] -> bool
+  (let [[cloned-file cloned-err] (os.clone original)]
+    (and (= cloned-err nil) (!= cloned-file nil))))
+
+(defn manual-open [path: string] -> bool
+  (let [[manual-file manual-err] (os.open path)]
+    (defer (os.close manual-file))
+    (and (= manual-err nil) (!= manual-file nil))))
+
+(defn transfer-file [path: string] -> ^os.File
+  (let [[transferred-file transferred-err] (os.open path)]
+    transferred-file))
+
+(defn forward-file [path: string] -> [file: ^os.File, err: os.Error]
+  (let [[file err] (os.open path) :or-return]
+    (return file err)))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "if direct_err == nil"), true)
+    testing.expect_value(t, strings.contains(output, "os.close(direct_file)"), true)
+    testing.expect_value(t, strings.contains(output, "if wrapped_err == nil"), true)
+    testing.expect_value(t, strings.contains(output, "os.close(wrapped_file)"), true)
+    testing.expect_value(t, strings.contains(output, "if created_err == nil"), true)
+    testing.expect_value(t, strings.contains(output, "os.close(created_file)"), true)
+    testing.expect_value(t, strings.contains(output, "if cloned_err == nil"), true)
+    testing.expect_value(t, strings.contains(output, "os.close(cloned_file)"), true)
+    testing.expect_value(t, strings.count(output, "defer os.close(manual_file)"), 1)
+    testing.expect_value(t, strings.contains(output, "os.close(transferred_file)"), false)
+    testing.expect_value(t, strings.contains(output, "os.close(file)"), false)
+    testing.expect_value(t, strings.contains(output, "#owned"), false)
+    testing.expect_value(t, strings.contains(output, "#borrowed"), false)
+}
+
+@(test)
+warn_when_automatic_file_cleanup_is_skipped_for_capture :: proc(t: ^testing.T) {
+    source := `(package main)
+(import os "core:os")
+
+(defn apply-check [f: (fn [] -> bool)] -> bool
+  (f))
+
+(defn captured-open [path: string] -> bool
+  (let [[captured-file captured-err] (os.open path)]
+    (if (= captured-err nil)
+      (apply-check (fn [] -> bool (!= captured-file nil)))
+      false)))
+
+(defn shadowed-open [path: string] -> bool
+  (let [[shadowed-file shadowed-err] (os.open path)]
+    (if (= shadowed-err nil)
+      (let [shadowed-file 42]
+        (apply-check (fn [] -> bool (= shadowed-file 42))))
+      false)))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, strings.contains(result.output, "os.close(captured_file)"), false)
+    testing.expect_value(t, strings.contains(result.output, "proc(captured_file: ^os.File) -> bool"), true)
+    testing.expect_value(t, strings.contains(result.output, "os.close(shadowed_file)"), true)
+    testing.expect_value(t, len(result.warnings), 1)
+    if len(result.warnings) == 1 {
+        testing.expect_value(t, result.warnings[0].message, "automatic cleanup for owned result `captured_file` was skipped because it is captured by a closure; clean it up explicitly after its last use or transfer ownership")
+        testing.expect_value(t, result.warnings[0].code, kvist.Compile_Warning_Code.Ownership_Automatic_Cleanup_Skipped)
+        testing.expect_value(t, result.warnings[0].confidence, kvist.Compile_Warning_Confidence.Conservative)
+    }
+}
+
+@(test)
+warn_when_automatic_file_cleanup_is_skipped_for_storage :: proc(t: ^testing.T) {
+    source := `(package main)
+(import os "core:os")
+
+(defstruct File-Holder [file: ^os.File])
+
+(defn stored-open [path: string] -> bool
+  (let [[stored-file stored-err] (os.open path)]
+    (if (= stored-err nil)
+      (let [holder (File-Holder :file stored-file)]
+        (!= holder.file nil))
+      false)))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, strings.contains(result.output, "os.close(stored_file)"), false)
+    testing.expect_value(t, len(result.warnings), 1)
+    if len(result.warnings) == 1 {
+        testing.expect_value(t, result.warnings[0].message, "automatic cleanup for owned result `stored_file` was skipped because it is stored in an aggregate or mutable place; clean it up explicitly after its last use or transfer ownership")
+        testing.expect_value(t, result.warnings[0].code, kvist.Compile_Warning_Code.Ownership_Automatic_Cleanup_Skipped)
+        testing.expect_value(t, result.warnings[0].confidence, kvist.Compile_Warning_Confidence.Conservative)
+    }
+}
+
+@(test)
+warn_discarded_direct_read_entire_file_with_automatic_cleanup_hint :: proc(t: ^testing.T) {
+    source := `(package main)
+(import os "core:os")
+
+(defn discarded [path: string]
+  (os.read_entire_file path context.allocator)
+  (return))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 1)
+    if len(result.warnings) == 1 {
+        testing.expect_value(t, result.warnings[0].message, "owned result from os.read_entire_file is discarded; destructure its results for automatic scoped cleanup, or return it")
     }
 }
 
@@ -680,12 +3000,12 @@ warn_discarded_third_party_named_owned_bytes_from_alloc_shape :: proc(t: ^testin
     testing.expect_value(t, strings.contains(result.output, "return ops.read_entire_file(path, context.allocator)"), true)
     testing.expect_value(t, len(result.warnings), 1)
     if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.read-bytes is discarded; bind it, delete it, or return it")
+        testing.expect_value(t, result.warnings[0].message, "owned result from support.read-bytes is discarded; destructure its results for automatic scoped cleanup, or return it")
     }
 }
 
 @(test)
-warn_discarded_third_party_destructured_owned_wrapper_result :: proc(t: ^testing.T) {
+delete_discarded_third_party_destructured_owned_wrapper_result :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-owned-destructured-wrapper-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)
     if dir_err != nil {
@@ -758,10 +3078,8 @@ warn_discarded_third_party_destructured_owned_wrapper_result :: proc(t: ^testing
     testing.expect_value(t, strings.contains(result.output, "support__read_base :: #force_inline proc(path: string) -> (data: []byte, err: os.Error)"), true)
     testing.expect_value(t, strings.contains(result.output, "support__read_wrapper :: #force_inline proc(path: string) -> []byte"), true)
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.read-wrapper is discarded; bind it, delete it, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
 
 @(test)
@@ -787,7 +3105,7 @@ compile_direct_core_strings_result_without_owned_warning :: proc(t: ^testing.T) 
 }
 
 @(test)
-warn_discarded_third_party_replaced_string_from_alloc_shape :: proc(t: ^testing.T) {
+delete_discarded_third_party_replaced_string_from_alloc_shape :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-source-owned-replace-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)
     if dir_err != nil {
@@ -857,10 +3175,8 @@ warn_discarded_third_party_replaced_string_from_alloc_shape :: proc(t: ^testing.
     testing.expect_value(t, strings.contains(result.output, "support__replace_all :: #force_inline proc(s, old, new: string) -> string"), true)
     testing.expect_value(t, strings.contains(result.output, "out, _ := strings.replace(s, old, new, -1)"), true)
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.replace-all is discarded; bind it, delete it, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
 
 @(test)
@@ -877,7 +3193,7 @@ reject_nested_owned_sequence_result :: proc(t: ^testing.T) {
     _, err, ok := kvist.compile_source(source)
     testing.expect_value(t, ok, false)
     defer delete(err.message)
-    testing.expect_value(t, err.message, "arr.map returns an owned result; bind it so it can be deleted, or return it to transfer ownership")
+    testing.expect_value(t, err.message, "arr.map returns an owned result; bind it so it can be cleaned up, or return it to transfer ownership")
 }
 
 @(test)
@@ -894,7 +3210,7 @@ reject_nested_tapped_owned_sequence_result :: proc(t: ^testing.T) {
     _, err, ok := kvist.compile_source(source)
     testing.expect_value(t, ok, false)
     defer delete(err.message)
-    testing.expect_value(t, err.message, "arr.map returns an owned result; bind it so it can be deleted, or return it to transfer ownership")
+    testing.expect_value(t, err.message, "arr.map returns an owned result; bind it so it can be cleaned up, or return it to transfer ownership")
 }
 
 @(test)
@@ -925,7 +3241,7 @@ main :: proc() {
 }
 
 @(test)
-compile_warns_for_leaked_owned_let_local :: proc(t: ^testing.T) {
+compile_automatically_cleans_up_untransferred_owned_let_local :: proc(t: ^testing.T) {
     source := `(package main)
 (import arr "kvist:arr")
 
@@ -943,12 +3259,63 @@ compile_warns_for_leaked_owned_let_local :: proc(t: ^testing.T) {
     defer kvist.source_map_slice_delete(result.source_map)
     defer kvist.compile_warning_slice_delete(result.warnings)
 
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned local xs is never deleted or returned; add (defer (delete xs)) or return it")
-        testing.expect_value(t, result.warnings[0].code, kvist.Compile_Warning_Code.Ownership_Unreleased_Local)
-        testing.expect_value(t, result.warnings[0].confidence, kvist.Compile_Warning_Confidence.Conservative)
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, result.ownership_plan_adoptions, 1)
+    testing.expect_value(t, strings.contains(result.output, "defer (proc(kvist_place: ^[dynamic]int, kvist_owner: ^bool)"), true)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_place^)"), true)
+}
+
+@(test)
+compile_automatically_cleans_up_untransferred_owned_string_local :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defn make-label [value: int] -> string
+  (str "value=" value))
+
+(defn demo [] -> int
+  (let [label (make-label 42)]
+    (count label)))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
     }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "defer (proc(kvist_place: ^string, kvist_owner: ^bool)"), true)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_place^)"), true)
+}
+
+@(test)
+compile_automatically_cleans_up_untransferred_owned_slice_local :: proc(t: ^testing.T) {
+    source := `(package main)
+(import strings "core:strings")
+
+(defn split-words [value: string] -> []string
+  (strings.split value " "))
+
+(defn demo [value: string] -> int
+  (let [words (split-words value)]
+    (count words)))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "defer (proc(kvist_place: ^[]string, kvist_owner: ^bool)"), true)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_place^)"), true)
 }
 
 @(test)
@@ -1003,7 +3370,7 @@ compile_tracks_owned_replacement_after_delete_and_set :: proc(t: ^testing.T) {
 }
 
 @(test)
-warn_discarded_third_party_split_slice_from_alloc_shape :: proc(t: ^testing.T) {
+delete_discarded_third_party_split_slice_from_alloc_shape :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-source-owned-split-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)
     if dir_err != nil {
@@ -1072,8 +3439,6 @@ warn_discarded_third_party_split_slice_from_alloc_shape :: proc(t: ^testing.T) {
     testing.expect_value(t, strings.contains(result.output, "support__split_words :: #force_inline proc(s: string) -> []string"), true)
     testing.expect_value(t, strings.contains(result.output, "return strings.split(s, \" \")"), true)
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.split-words is discarded; bind it, delete it, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }

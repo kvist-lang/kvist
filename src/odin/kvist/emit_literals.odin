@@ -340,13 +340,31 @@ emit_struct_field_value_text :: proc(e: ^Emitter, field: Struct_Field, value: CS
     moved_local := false
     if value.kind == .Symbol && ownership_type_has_destructor(e, field.ty) {
         name := map_name(value.text)
-        if owner_flag, ok_owner := lookup_managed_local_owner(e, name); ok_owner {
+        owner_flag, ok_owner := lookup_managed_local_owner(e, name)
+        if !ok_owner {
+            owner_flag, ok_owner = ownership_ir_active_event_owner_flag(
+                e,
+                name,
+                value.span,
+                .Store,
+            )
+        }
+        if ok_owner {
             value_text = managed_move_local_value_text(e, field.ty, value_text, owner_flag)
             moved_local = true
         }
         delete(name)
     } else if owner_name, has_owner := form_direct_borrow_owner_name(value, e); has_owner {
-        if owner_flag, ok_owner := lookup_managed_local_owner(e, owner_name); ok_owner {
+        owner_flag, ok_owner := lookup_managed_local_owner(e, owner_name)
+        if !ok_owner {
+            owner_flag, ok_owner = ownership_ir_active_event_owner_flag(
+                e,
+                owner_name,
+                value.span,
+                .Store,
+            )
+        }
+        if ok_owner {
             value_text = managed_move_local_value_text(e, field.ty, value_text, owner_flag)
             moved_local = true
         }

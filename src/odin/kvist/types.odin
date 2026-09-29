@@ -186,6 +186,8 @@ Proc_Decl :: struct {
     returns:           Return_Spec,
     owns_result:       bool,
     borrows_result:    bool,
+    owned_result_fields: [dynamic]int,
+    owned_result_fields_uncertain: bool,
     prefix_directives: [dynamic]string,
     suffix_directives: [dynamic]string,
     where_constraints: [dynamic]CST_Form,
@@ -262,9 +264,10 @@ Source_Map_Entry :: struct {
 }
 
 Emit_Result :: struct {
-    output:     string,
-    source_map: [dynamic]Source_Map_Entry,
-    warnings:   [dynamic]Compile_Warning,
+    output:                   string,
+    source_map:               [dynamic]Source_Map_Entry,
+    warnings:                 [dynamic]Compile_Warning,
+    ownership_plan_adoptions: int,
 }
 
 Generated_Package_Artifact :: struct {
@@ -311,6 +314,7 @@ Compile_Warning_Code :: enum {
     Ownership_Borrowed_Escape,
     Ownership_Delete_Borrowed,
     Ownership_Defer_In_Loop,
+    Ownership_Automatic_Cleanup_Skipped,
     Repl_Unretained_Lifecycle,
 }
 

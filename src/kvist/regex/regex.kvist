@@ -15,7 +15,8 @@
 (defn compile
   "Compile `pattern` with Odin's default regex flags.
 
-  The returned regex owns compiler-allocated storage. Destroy a successful
+  The returned regex owns compiler-allocated storage. A non-escaping
+  destructured result is cleaned automatically; otherwise destroy a successful
   result with `regex.destroy!`."
   [pattern: Pattern] -> [value: Regex, err: Error] #force_inline
   (rx.create pattern))
@@ -23,7 +24,8 @@
 (defn compile-with-flags
   "Compile `pattern` with explicit Odin regex flags.
 
-  The returned regex owns compiler-allocated storage. Destroy a successful
+  The returned regex owns compiler-allocated storage. A non-escaping
+  destructured result is cleaned automatically; otherwise destroy a successful
   result with `regex.destroy!`."
   [pattern: Pattern, flags: Flags] -> [value: Regex, err: Error] #force_inline
   (rx.create pattern flags))
@@ -36,7 +38,8 @@
 (defn match
   "Match a compiled regex against `s` and return allocated capture data.
 
-  Capture strings are slices into `s`, but the capture arrays are owned. Destroy
+  Capture strings are slices into `s`, but the capture arrays are owned. A
+  non-escaping destructured result is cleaned automatically; otherwise destroy
   the capture result with `regex.destroy-capture!`."
   [compiled: Regex, s: string] -> [capture: Capture, ok: bool] #force_inline
   (rx.match_and_allocate_capture compiled s))
@@ -52,8 +55,7 @@
   This allocates temporary capture arrays and destroys them before returning."
   [compiled: Regex, s: string] -> bool #force_inline
   (let [[capture ok] (rx.match_and_allocate_capture compiled s)]
-    (let [owned-capture capture :defer-with rx.destroy]
-      ok)))
+    ok))
 
 (defn matches?
   "Compile `pattern`, match it against `s`, destroy intermediate data, and return success."
@@ -61,9 +63,7 @@
   (let [[compiled err] (rx.create pattern)]
     (if (!= err nil)
       false
-      (do
-        (let [owned-compiled compiled :defer-with rx.destroy]
-          (matches-compiled? owned-compiled s))))))
+      (matches-compiled? compiled s))))
 
 (defn find?
   "Alias for `regex.matches?`; Odin regex matching searches according to the pattern."

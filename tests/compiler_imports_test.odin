@@ -2766,7 +2766,7 @@ compile_does_not_classify_unimported_str_owned_helper_as_owned :: proc(t: ^testi
 }
 
 @(test)
-warn_discarded_imported_str_split_owned_result :: proc(t: ^testing.T) {
+delete_discarded_imported_str_split_owned_result :: proc(t: ^testing.T) {
     source := `(package main)
 (import str "kvist:str")
 
@@ -2784,14 +2784,12 @@ warn_discarded_imported_str_split_owned_result :: proc(t: ^testing.T) {
     defer kvist.compile_warning_slice_delete(result.warnings)
 
     testing.expect_value(t, strings.contains(result.output, "str__split(s, \",\")"), true)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from str.split is discarded; bind it, delete it, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
 
 @(test)
-warn_discarded_imported_str_finish_owned_result :: proc(t: ^testing.T) {
+delete_discarded_imported_str_finish_owned_result :: proc(t: ^testing.T) {
     source := `(package main)
 (import str "kvist:str")
 
@@ -2811,10 +2809,8 @@ warn_discarded_imported_str_finish_owned_result :: proc(t: ^testing.T) {
     defer kvist.compile_warning_slice_delete(result.warnings)
 
     testing.expect_value(t, strings.contains(result.output, "str__finish(&builder)"), true)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from str.finish is discarded; bind it, delete it, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
 
 @(test)

@@ -183,6 +183,94 @@ symbols_source_includes_proc_default_values_in_signatures :: proc(t: ^testing.T)
 }
 
 @(test)
+symbols_source_includes_inferred_aggregate_result_ownership :: proc(
+    t: ^testing.T,
+) {
+    source := `(package main)
+(import os "core:os")
+
+(defstruct Owned-Bytes [data: []byte])
+
+(defn make-owned-bytes [path: string] -> Owned-Bytes
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (discard err)
+    (Owned-Bytes :data data)))
+
+(defn forward-owned-bytes [path: string] -> Owned-Bytes
+  (make-owned-bytes path))
+
+(defn borrow-bytes [data: []byte] -> Owned-Bytes
+  (Owned-Bytes :data data))
+
+(defn maybe-owned-bytes [path: string, borrowed: []byte, own?: bool] -> Owned-Bytes
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (discard err)
+    (if own?
+      (Owned-Bytes :data data)
+      (Owned-Bytes :data borrowed))))`
+
+    output, err, ok := kvist.symbols_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(
+        t,
+        strings.contains(
+            output,
+            "proc\tmake-owned-bytes\t6\t7\tresult-field-owned=0\t",
+        ),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(
+            output,
+            "proc\tforward-owned-bytes\t11\t7\tresult-field-owned=0\t",
+        ),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(
+            output,
+            "proc\tborrow-bytes\t14\t7\tresult-field-owned=0\t",
+        ),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(
+            output,
+            "proc\tmaybe-owned-bytes\t17\t7\tresult-fields=uncertain\t",
+        ),
+        true,
+    )
+
+    editor_output, editor_err, editor_ok := kvist.editor_symbols_source(
+        "/tmp/editor-aggregate-ownership-test.kvist",
+        source,
+    )
+    testing.expect_value(t, editor_ok, true)
+    if !editor_ok {
+        testing.expect_value(t, editor_err.message, "")
+        return
+    }
+    defer delete(editor_output)
+    testing.expect_value(
+        t,
+        strings.contains(
+            editor_output,
+            "proc\tforward-owned-bytes\t11\t7\tresult-field-owned=0\t",
+        ),
+        true,
+    )
+}
+
+@(test)
 symbols_source_includes_dot_access_param_signatures :: proc(t: ^testing.T) {
     source := `(package main)
 
@@ -828,12 +916,20 @@ editor_symbols_source_includes_multi_file_root_package_symbols_from_non_anchor_f
     }
     defer delete(main_path)
     main_source := `(package demo)
+(import os "core:os")
+
+(defstruct Owned-Bytes [data: []byte])
 
 (defstruct App_State
   [count: int])
 
 (defn main [] -> int
-  (helper-value 5))`
+  (helper-value 5))
+
+(defn make-owned-bytes [path: string] -> Owned-Bytes
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (discard err)
+    (Owned-Bytes :data data)))`
     main_write_err := os.write_entire_file_from_string(main_path, main_source)
     testing.expect_value(t, main_write_err == nil, true)
     if main_write_err != nil {
@@ -849,7 +945,10 @@ editor_symbols_source_includes_multi_file_root_package_symbols_from_non_anchor_f
     app_source := `(package demo)
 
 (defn helper-value [n: int] -> int
-  (+ n 1))`
+  (+ n 1))
+
+(defn forward-owned-bytes [path: string] -> Owned-Bytes
+  (make-owned-bytes path))`
     app_write_err := os.write_entire_file_from_string(app_path, app_source)
     testing.expect_value(t, app_write_err == nil, true)
     if app_write_err != nil {
@@ -866,6 +965,14 @@ editor_symbols_source_includes_multi_file_root_package_symbols_from_non_anchor_f
 
     testing.expect_value(t, strings.contains(output, "proc\tmain\t"), true)
     testing.expect_value(t, strings.contains(output, "struct\tApp_State\t"), true)
+    testing.expect_value(
+        t,
+        strings.contains(
+            output,
+            "proc\tforward-owned-bytes\t6\t7\tresult-field-owned=0\t",
+        ),
+        true,
+    )
     testing.expect_value(t, strings.contains(output, main_path), true)
 }
 
@@ -915,12 +1022,42 @@ editor_symbols_source_includes_relative_source_package_imports :: proc(t: ^testi
     }
     defer delete(support_path)
     support_source := `(package math)
+(import os "core:os")
+
+(defstruct Owned-Bytes [data: []byte])
 
 (defn sum-range [start: int, end: int] -> int
-  (+ start end))`
+  (+ start end))
+
+(defn make-owned-bytes [path: string] -> Owned-Bytes
+  (let [[data err] (os.read_entire_file path context.allocator)]
+    (discard err)
+    (Owned-Bytes :data data)))`
     support_write_err := os.write_entire_file_from_string(support_path, support_source)
     testing.expect_value(t, support_write_err == nil, true)
     if support_write_err != nil {
+        return
+    }
+
+    forward_path, forward_path_err := os.join_path(
+        {support_dir, "forward.kvist"},
+        context.allocator,
+    )
+    testing.expect_value(t, forward_path_err == nil, true)
+    if forward_path_err != nil {
+        return
+    }
+    defer delete(forward_path)
+    forward_source := `(package math)
+
+(defn forward-owned-bytes [path: string] -> Owned-Bytes
+  (make-owned-bytes path))`
+    forward_write_err := os.write_entire_file_from_string(
+        forward_path,
+        forward_source,
+    )
+    testing.expect_value(t, forward_write_err == nil, true)
+    if forward_write_err != nil {
         return
     }
 
@@ -934,6 +1071,22 @@ editor_symbols_source_includes_relative_source_package_imports :: proc(t: ^testi
 
     testing.expect_value(t, strings.contains(output, "source import\tmath\t1\t1\tsupport/math\t(import math \"support/math\")"), true)
     testing.expect_value(t, strings.contains(output, "proc\tmath.sum-range\t"), true)
+    testing.expect_value(
+        t,
+        strings.contains(
+            output,
+            "proc\tmath.make-owned-bytes\t9\t7\tsupport/math;result-field-owned=0\t",
+        ),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(
+            output,
+            "proc\tmath.forward-owned-bytes\t3\t7\tsupport/math;result-field-owned=0\t",
+        ),
+        true,
+    )
     testing.expect_value(t, strings.contains(output, support_path), true)
 }
 

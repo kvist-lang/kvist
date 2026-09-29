@@ -118,12 +118,25 @@ package_decls_interface_hash :: proc(decls: []IR_Decl) -> u64 {
             }
         case .Proc:
             proc_decl := decl.proc_decl
+            ownership_contract := procedure_result_ownership_contract(
+                &proc_decl,
+            )
             hash = package_artifact_hash_text(hash, proc_decl.name)
             hash = package_artifact_hash_text(hash, proc_decl.calling_convention)
             hash = package_artifact_hash_text(
                 hash,
-                fmt.tprintf("%t:%t", proc_decl.owns_result, proc_decl.borrows_result),
+                fmt.tprintf(
+                    "%d:%t",
+                    ownership_contract.result_flow,
+                    ownership_contract.result_fields_uncertain,
+                ),
             )
+            for field_index in ownership_contract.owned_result_fields {
+                hash = package_artifact_hash_text(
+                    hash,
+                    fmt.tprintf("owned-field:%d", field_index),
+                )
+            }
             for param in proc_decl.params {
                 hash = package_artifact_hash_param(hash, param)
             }
@@ -141,6 +154,7 @@ package_decls_interface_hash :: proc(decls: []IR_Decl) -> u64 {
             for constraint in proc_decl.where_constraints {
                 hash = package_artifact_hash_cst(hash, constraint)
             }
+            procedure_ownership_contract_delete(&ownership_contract)
         case .Source:
             hash = package_artifact_hash_text(hash, decl.source_decl.name)
             hash = package_artifact_hash_text(hash, decl.source_decl.state_ty)
@@ -787,16 +801,19 @@ emit_ir_program_with_package_artifacts :: proc(
     profile: ^Compile_Profile = nil,
     cache_dir := "",
 ) -> (result: Package_Emit_Result, err: Compile_Error, ok: bool) {
+    err_prepare, ok_prepare := prepare_ir_decls_for_emission(program.decls[:], profile)
+    if !ok_prepare {
+        return result, err_prepare, false
+    }
+    // Grouping copies declaration values. Run lifetime/ownership inference
+    // first so interface hashes and dependency cache keys include the same
+    // inferred contracts that emission consumes.
     groups, grouped := group_ir_decls_by_package(program, root_path)
     if !grouped {
         return result, Compile_Error{message = "could not group generated packages"}, false
     }
     defer delete_ir_package_groups(&groups)
 
-    err_prepare, ok_prepare := prepare_ir_decls_for_emission(program.decls[:], profile)
-    if !ok_prepare {
-        return result, err_prepare, false
-    }
     interfaces := make(map[string]u64)
     defer delete(interfaces)
     for group in groups {

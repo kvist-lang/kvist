@@ -158,6 +158,8 @@ compile_path_warnings_report_the_imported_package_file :: proc(t: ^testing.T) {
 (import arr "kvist:arr")
 (defn helper []
   (let [forgotten (make [dynamic]int)]
+    (set! forgotten (make [dynamic]int))
+    (defer (delete forgotten))
     (println (count forgotten))))`
     testing.expect_value(t, os.write_entire_file_from_string(helper_path, helper_source) == nil, true)
 
@@ -177,12 +179,14 @@ compile_path_warnings_report_the_imported_package_file :: proc(t: ^testing.T) {
     }
     warning := result.warnings[0]
     testing.expect_value(t, warning.source_path, helper_path)
-    testing.expect_value(t, warning.line, 4)
+    testing.expect_value(t, warning.line, 5)
     testing.expect_value(t, warning.column > 0, true)
 
     formatted := kvist.format_compile_warning(main_path, "", warning)
     defer delete(formatted)
-    testing.expect_value(t, strings.has_prefix(formatted, fmt.tprintf("%s:4:", helper_path)), true)
+    testing.expect_value(t, strings.has_prefix(formatted, fmt.tprintf("%s:5:", helper_path)), true)
+    testing.expect_value(t, strings.contains(formatted, "  (set! forgotten (make [dynamic]int))\n"), true)
+    testing.expect_value(t, strings.contains(formatted, "  ^\n"), true)
 
     found_helper_map := false
     for entry in result.source_map {
@@ -235,6 +239,120 @@ compile_path_errors_report_the_imported_package_file :: proc(t: ^testing.T) {
     defer delete(formatted)
     testing.expect_value(t, strings.has_prefix(formatted, fmt.tprintf("%s:2:", helper_path)), true)
     testing.expect_value(t, strings.contains(formatted, "(def answer [1 2)"), true)
+}
+
+@(test)
+compile_path_source_package_struct_field_if_uses_imported_field_type :: proc(t: ^testing.T) {
+    dir, dir_err := os.make_directory_temp("", "kvist-imported-struct-if-*", context.allocator)
+    testing.expect_value(t, dir_err == nil, true)
+    if dir_err != nil {
+        return
+    }
+    defer os.remove_all(dir)
+    defer delete(dir)
+
+    support_dir, support_dir_err := os.join_path({dir, "support"}, context.allocator)
+    main_path, main_err := os.join_path({dir, "main.kvist"}, context.allocator)
+    support_path, support_err := os.join_path({support_dir, "support.kvist"}, context.allocator)
+    testing.expect_value(t, support_dir_err == nil && main_err == nil && support_err == nil, true)
+    if support_dir_err != nil || main_err != nil || support_err != nil {
+        return
+    }
+    defer delete(support_dir)
+    defer delete(main_path)
+    defer delete(support_path)
+    testing.expect_value(t, os.make_directory_all(support_dir) == nil, true)
+
+    main_source := `(package main)
+(import support "support")
+
+(defn make-result [use-fallback?: bool] -> support.Result
+  (support.Result
+    :cause
+      (clone-text
+        (if use-fallback?
+          "fallback"
+          "reported"))))`
+    support_source := `(package support)
+
+(defstruct Result [cause: string])`
+    testing.expect_value(t, os.write_entire_file_from_string(main_path, main_source) == nil, true)
+    testing.expect_value(t, os.write_entire_file_from_string(support_path, support_source) == nil, true)
+
+    output, err, ok := kvist.compile_path(main_path)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+    testing.expect_value(
+        t,
+        strings.contains(
+            output,
+            `support__Result{cause = clone_text(("fallback" if use_fallback_p else "reported"))}`,
+        ),
+        true,
+    )
+}
+
+@(test)
+compile_path_macro_expansion_error_reports_imported_file_and_call_location :: proc(t: ^testing.T) {
+    dir, dir_err := os.make_directory_temp("", "kvist-imported-macro-span-*", context.allocator)
+    testing.expect_value(t, dir_err == nil, true)
+    if dir_err != nil {
+        return
+    }
+    defer os.remove_all(dir)
+    defer delete(dir)
+
+    support_dir, support_dir_err := os.join_path({dir, "support"}, context.allocator)
+    main_path, main_err := os.join_path({dir, "main.kvist"}, context.allocator)
+    support_path, support_err := os.join_path({support_dir, "support.kvist"}, context.allocator)
+    testing.expect_value(t, support_dir_err == nil && main_err == nil && support_err == nil, true)
+    if support_dir_err != nil || main_err != nil || support_err != nil {
+        return
+    }
+    defer delete(support_dir)
+    defer delete(main_path)
+    defer delete(support_path)
+    testing.expect_value(t, os.make_directory_all(support_dir) == nil, true)
+
+    main_source := `(package main)
+(import support "support")
+
+(defn main [] -> support.Result
+  (support.make-result))`
+    support_source := `(package support)
+
+(defstruct Result [cause: string])
+
+(defn make-result [] -> Result
+  (let [cause (cond
+                true "fallback")]
+    (Result :cause cause)))`
+    testing.expect_value(t, os.write_entire_file_from_string(main_path, main_source) == nil, true)
+    testing.expect_value(t, os.write_entire_file_from_string(support_path, support_source) == nil, true)
+
+    _, err, ok := kvist.compile_path(main_path)
+    testing.expect_value(t, ok, false)
+    if ok {
+        return
+    }
+    defer kvist.compile_error_delete(&err)
+    testing.expect_value(t, err.message, "if expression expects test, then, and else")
+    testing.expect_value(t, err.source_path, support_path)
+    testing.expect_value(
+        t,
+        support_source[err.span.start:err.span.end],
+        `(cond
+                true "fallback")`,
+    )
+
+    formatted := kvist.format_compile_error(main_path, "", err)
+    defer delete(formatted)
+    testing.expect_value(t, strings.has_prefix(formatted, fmt.tprintf("%s:6:", support_path)), true)
+    testing.expect_value(t, strings.contains(formatted, "  (let [cause (cond"), true)
 }
 
 @(test)

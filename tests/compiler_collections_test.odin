@@ -757,7 +757,11 @@ State :: struct {
 main :: proc() {
     values := []int{1, 2, 3}
     buffer := make([dynamic]int)
+    kvist_owner_1 := true
+    defer (proc(kvist_place: ^[dynamic]int, kvist_owner: ^bool) { if kvist_owner^ { delete(kvist_place^) } })(&buffer, &kvist_owner_1)
     lookup := make(map[string]int)
+    kvist_owner_2 := true
+    defer (proc(kvist_place: ^map[string]int, kvist_owner: ^bool) { if kvist_owner^ { delete(kvist_place^) } })(&lookup, &kvist_owner_2)
     return
 }
 `
@@ -944,6 +948,8 @@ Config :: struct {
 main :: proc() {
     ports: [3]int = [3]int{80, 443, 8080}
     lookup: map[string]int = map[string]int{"http" = 80, "https" = 443}
+    kvist_owner_1 := true
+    defer (proc(kvist_place: ^map[string]int, kvist_owner: ^bool) { if kvist_owner^ { delete(kvist_place^) } })(&lookup, &kvist_owner_1)
     return
 }
 `
@@ -1132,7 +1138,11 @@ package main
 
 main :: proc() {
     by_code := map[int]string{1 = "one", 2 = "two"}
+    kvist_owner_1 := true
+    defer (proc(kvist_place: ^map[int]string, kvist_owner: ^bool) { if kvist_owner^ { delete(kvist_place^) } })(&by_code, &kvist_owner_1)
     by_flag := map[bool]int{true = 1, false = 0}
+    kvist_owner_2 := true
+    defer (proc(kvist_place: ^map[bool]int, kvist_owner: ^bool) { if kvist_owner^ { delete(kvist_place^) } })(&by_flag, &kvist_owner_2)
     return
 }
 `
@@ -1371,7 +1381,7 @@ compile_filter_bang_supports_single_captured_local_in_fn_literal :: proc(t: ^tes
 }
 
 @(test)
-compile_warns_for_typed_dynamic_array_let_local :: proc(t: ^testing.T) {
+compile_automatically_cleans_up_typed_dynamic_array_let_local :: proc(t: ^testing.T) {
     source := `(package main)
 
 (defn demo []
@@ -1388,10 +1398,9 @@ compile_warns_for_typed_dynamic_array_let_local :: proc(t: ^testing.T) {
     defer kvist.source_map_slice_delete(result.source_map)
     defer kvist.compile_warning_slice_delete(result.warnings)
 
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned local xs is never deleted or returned; add (defer (delete xs)) or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "defer (proc(kvist_place: ^[dynamic]int, kvist_owner: ^bool)"), true)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_place^)"), true)
 }
 
 @(test)

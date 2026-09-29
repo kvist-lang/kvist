@@ -185,6 +185,7 @@ emit_selected_decls_with_source_map :: proc(
         output = adjusted_output
         shift_source_map_lines(&result.source_map, added_lines)
     }
+    result.ownership_plan_adoptions = e.ownership_plan_adoptions
     if features.dynamic_literals {
         output_builder := strings.builder_make()
         defer strings.builder_destroy(&output_builder)
@@ -1212,7 +1213,7 @@ kvist_repl_stabilize_result :: proc "c" (occupied: [^]rawptr, occupied_count: in
             ),
         )
         if repl_proc_decl != nil &&
-           repl_proc_supports_scalar_invoke(repl_proc_decl) {
+           repl_proc_supports_scalar_invoke(repl_proc_decl, &e) {
             adapter := repl_scalar_invoke_adapter_name(repl_proc_name)
             result_signature := repl_value_signature(
                 repl_proc_decl.returns.single_ty,
@@ -1251,7 +1252,7 @@ kvist_repl_stabilize_result :: proc "c" (occupied: [^]rawptr, occupied_count: in
                     decl.proc_decl.name,
                 ),
             )
-            if repl_proc_supports_scalar_invoke(&decl.proc_decl) {
+            if repl_proc_supports_scalar_invoke(&decl.proc_decl, &e) {
                 adapter := repl_scalar_invoke_adapter_name(decl.proc_decl.name)
                 result_signature := repl_value_signature(
                     decl.proc_decl.returns.single_ty,
@@ -1546,6 +1547,7 @@ kvist_repl_stabilize_result :: proc "c" (occupied: [^]rawptr, occupied_count: in
         output = adjusted_output
         shift_source_map_lines(&result.source_map, added_lines)
     }
+    result.ownership_plan_adoptions = e.ownership_plan_adoptions
     if features.dynamic_literals {
         output_builder := strings.builder_make()
         defer strings.builder_destroy(&output_builder)
@@ -1627,14 +1629,22 @@ repl_scalar_invoke_adapter_name :: proc(name: string) -> string {
     return fmt.tprintf("%s__kvist_repl_scalar_invoke", name)
 }
 
-repl_proc_supports_scalar_invoke :: proc(proc_decl: ^Proc_Decl) -> bool {
+repl_proc_supports_scalar_invoke :: proc(
+    proc_decl: ^Proc_Decl,
+    e: ^Emitter = nil,
+) -> bool {
     if proc_decl == nil || len(proc_decl.params) > 4 ||
        proc_decl.returns.kind != .Single ||
        !repl_scalar_invoke_type_supported(proc_decl.returns.single_ty) {
         return false
     }
-    for param in proc_decl.params {
-        if param.ownership == .Owned ||
+    ownership_contract := procedure_ownership_contract(proc_decl, e)
+    defer procedure_ownership_contract_delete(&ownership_contract)
+    for param, parameter_index in proc_decl.params {
+        if procedure_ownership_contract_consumes(
+               &ownership_contract,
+               parameter_index,
+           ) ||
            !repl_scalar_invoke_type_supported(param.ty) {
             return false
         }
@@ -1646,7 +1656,7 @@ emit_repl_scalar_invoke_adapter :: proc(
     e: ^Emitter,
     proc_decl: ^Proc_Decl,
 ) {
-    if !repl_proc_supports_scalar_invoke(proc_decl) {
+    if !repl_proc_supports_scalar_invoke(proc_decl, e) {
         return
     }
     adapter := repl_scalar_invoke_adapter_name(proc_decl.name)
@@ -1852,7 +1862,10 @@ emit_repl_scalar_invoke_adapter :: proc(
             strings.to_string(arguments),
         ),
     )
-    owned := proc_decl.returns.single_ownership == .Owned || proc_decl.owns_result
+    ownership_contract := procedure_result_ownership_contract(proc_decl, e)
+    defer procedure_ownership_contract_delete(&ownership_contract)
+    owned := proc_decl.returns.single_ownership == .Owned ||
+             ownership_contract.result_flow == .Owned
     switch proc_decl.returns.single_ty {
     case "bool":
         emit_line(e, "result^ = {kind = .Bool, int_value = 1 if value else 0}")

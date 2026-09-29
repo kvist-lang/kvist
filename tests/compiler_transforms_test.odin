@@ -2631,7 +2631,7 @@ reject_functional_transform_output_type_mismatch :: proc(t: ^testing.T) {
 }
 
 @(test)
-warn_discarded_transform_into_result_from_output_type :: proc(t: ^testing.T) {
+delete_discarded_transform_into_result_from_output_type :: proc(t: ^testing.T) {
     source := `(package main)
 
 (defn inc [x: int] -> int
@@ -2655,10 +2655,8 @@ warn_discarded_transform_into_result_from_output_type :: proc(t: ^testing.T) {
     defer kvist.compile_warning_slice_delete(result.warnings)
 
     testing.expect_value(t, strings.contains(result.output, "append(&kvist_out"), true)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from into is discarded; bind it, delete it, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
 
 @(test)

@@ -6,45 +6,34 @@ import "core:sort"
 import "core:strings"
 import "base:runtime"
 
-symbols_proc_lifetime_detail :: proc(decl: ^Proc_Decl) -> string {
+procedure_ownership_contract_detail :: proc(
+    contract: ^Procedure_Ownership_Contract,
+) -> string {
     builder := strings.builder_make()
     defer strings.builder_destroy(&builder)
     first := true
-    borrowed_result := decl.borrows_result ||
-                       (decl.returns.kind == .Single &&
-                       len(decl.body) > 0 &&
-                       (borrowed_source_param_tracked(
-                            decl.body[len(decl.body)-1],
-                            decl.returns.single_ty,
-                            decl.params[:],
-                        ) ||
-                        known_odin_call_lifetime(decl.body[len(decl.body)-1]) == .Borrowed))
-    owned_result := !borrowed_result &&
-                    (decl.owns_result ||
-                     proc_decl_infers_owned_result(nil, decl) ||
-                     (len(decl.body) > 0 &&
-                      form_infers_known_foreign_lifetime(
-                          decl.body[len(decl.body)-1],
-                          .Owned,
-                      )))
-    if owned_result {
+    if contract.result_flow == .Owned {
         strings.write_string(&builder, "lifetime=result-owned")
         first = false
-    } else if borrowed_result {
+    } else if contract.result_flow == .Borrowed {
         strings.write_string(&builder, "lifetime=result-borrowed")
         first = false
     }
-    for param, idx in decl.params {
-        explicit_consumption :=
-            body_deletes_or_returns_name(nil, decl.body[:], param.name, false)
-        transferred_result :=
-            owned_result &&
-            body_deletes_or_returns_name(nil, decl.body[:], param.name, true)
-        if param.ownership != .Owned &&
-           !explicit_consumption &&
-           !transferred_result {
-            continue
+    for field_index in contract.owned_result_fields {
+        if !first {
+            strings.write_byte(&builder, ';')
         }
+        fmt.sbprintf(&builder, "result-field-owned=%d", field_index)
+        first = false
+    }
+    if contract.result_fields_uncertain {
+        if !first {
+            strings.write_byte(&builder, ';')
+        }
+        strings.write_string(&builder, "result-fields=uncertain")
+        first = false
+    }
+    for idx in contract.consumed_parameters {
         if !first {
             strings.write_byte(&builder, ';')
         }
@@ -52,6 +41,12 @@ symbols_proc_lifetime_detail :: proc(decl: ^Proc_Decl) -> string {
         first = false
     }
     return strings.to_string(builder)
+}
+
+symbols_proc_lifetime_detail :: proc(decl: ^Proc_Decl) -> string {
+    contract := procedure_ownership_contract(decl)
+    defer procedure_ownership_contract_delete(&contract)
+    return procedure_ownership_contract_detail(&contract)
 }
 
 lifetime_type_is_relevant :: proc(ty: string) -> bool {
@@ -66,10 +61,15 @@ lifetime_type_is_relevant :: proc(ty: string) -> bool {
            strings.has_prefix(text, "^")
 }
 
-lifetimes_write_proc :: proc(builder: ^strings.Builder, name: string, decl: ^Proc_Decl) {
-    detail := symbols_proc_lifetime_detail(decl)
-    defer delete(detail)
-    relevant := detail != ""
+lifetimes_write_proc :: proc(
+    builder: ^strings.Builder,
+    name: string,
+    decl: ^Proc_Decl,
+    e: ^Emitter = nil,
+) {
+    contract := procedure_ownership_contract(decl, e)
+    defer procedure_ownership_contract_delete(&contract)
+    relevant := procedure_ownership_contract_has_facts(&contract)
     if !relevant {
         for param in decl.params {
             if lifetime_type_is_relevant(param.ty) {
@@ -93,8 +93,8 @@ lifetimes_write_proc :: proc(builder: ^strings.Builder, name: string, decl: ^Pro
     defer delete(signature)
     fmt.sbprintf(builder, "%s\n  %s\n", display_name, signature)
 
-    borrowed_result := strings.contains(detail, "lifetime=result-borrowed")
-    owned_result := strings.contains(detail, "lifetime=result-owned")
+    borrowed_result := contract.result_flow == .Borrowed
+    owned_result := contract.result_flow == .Owned
     if decl.returns.kind == .Single && lifetime_type_is_relevant(decl.returns.single_ty) {
         if decl.returns.single_ty == "Data" && borrowed_result {
             strings.write_string(builder, "  result: caller-owned Data reference; the compiler retains the borrowed source at the return boundary\n")
@@ -109,12 +109,37 @@ lifetimes_write_proc :: proc(builder: ^strings.Builder, name: string, decl: ^Pro
         }
     }
 
+    if len(contract.owned_result_fields) > 0 {
+        return_struct, ok_struct := proc_single_struct_return(e, decl)
+        for field_index in contract.owned_result_fields {
+            if ok_struct && field_index >= 0 &&
+               field_index < len(return_struct.fields) {
+                fmt.sbprintf(
+                    builder,
+                    "  result field %s: owned; ownership transfers to the caller and automatic scoped cleanup is available\n",
+                    return_struct.fields[field_index].name,
+                )
+            } else {
+                fmt.sbprintf(
+                    builder,
+                    "  result field #%d: owned; ownership transfers to the caller and automatic scoped cleanup is available\n",
+                    field_index,
+                )
+            }
+        }
+    }
+    if contract.result_fields_uncertain {
+        strings.write_string(
+            builder,
+            "  result fields: uncertain across returns or mutations; automatic caller cleanup is not inserted\n",
+        )
+    }
+
     for param, idx in decl.params {
         if !lifetime_type_is_relevant(param.ty) {
             continue
         }
-        marker := fmt.tprintf("consumes=%d", idx)
-        if strings.contains(detail, marker) {
+        if procedure_ownership_contract_consumes(&contract, idx) {
             fmt.sbprintf(
                 builder,
                 "  %s: consumed; the body explicitly deletes it or transfers it through an owned result\n",
@@ -237,7 +262,12 @@ lifetimes_path :: proc(path: string) -> (output: string, err: Compile_Error, ok:
                 continue
             }
         }
-        lifetimes_write_proc(&builder, decl.proc_decl.name, &decl.proc_decl)
+        lifetimes_write_proc(
+            &builder,
+            decl.proc_decl.name,
+            &decl.proc_decl,
+            &emitter,
+        )
     }
     return strings.clone(strings.to_string(builder), result_allocator), {}, true
 }

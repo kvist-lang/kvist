@@ -20,7 +20,8 @@ for macros and DSLs, as an interactive environment for native code, or for
 applications that mix concrete types with flexible data-oriented subsystems.
 
 Ordinary values have Odin-like representation and ownership. Values are
-statically typed, allocation and mutation remain explicit, and generated
+statically typed, allocation and mutation remain explicit, and proven
+non-escaping native storage receives deterministic scope cleanup. Generated
 programs require no VM or garbage collector. Kvist lowers to readable Odin,
 imports Odin packages directly, and allows Kvist and Odin source files to
 coexist in the same package.

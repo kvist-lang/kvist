@@ -327,7 +327,8 @@ semantic_resident_scalar_invoke :: proc(
     // A loaded adapter preserves the already-compiled procedure's exact
     // native semantics, including state and effects. Stale session procedures
     // are excluded until their dependent definitions have been refreshed.
-    if proc_decl == nil || !repl_proc_supports_scalar_invoke(proc_decl) ||
+    if proc_decl == nil ||
+       !repl_proc_supports_scalar_invoke(proc_decl, analyzer.emitter) ||
        contains_text(analyzer.stale_proc_names, resolved_name) {
         return {}, .Invalid, false
     }
@@ -346,6 +347,7 @@ semantic_resident_scalar_invoke :: proc(
     defer delete(signature)
     inferred_signature := semantic_inferred_scalar_signature(
         proc_decl,
+        analyzer.emitter,
     )
     defer delete(inferred_signature)
     borrowed_result_signature := ""
@@ -353,10 +355,12 @@ semantic_resident_scalar_invoke :: proc(
     if return_kind == .String || return_kind == .Data {
         borrowed_result_signature = semantic_inferred_scalar_signature(
             proc_decl,
+            analyzer.emitter,
             "borrowed",
         )
         owned_result_signature = semantic_inferred_scalar_signature(
             proc_decl,
+            analyzer.emitter,
             "owned",
         )
     }
@@ -371,6 +375,11 @@ semantic_resident_scalar_invoke :: proc(
     case .Data: expected_result_abi = "value:Data"
     case .Invalid: return {}, .Invalid, false
     }
+    ownership_contract := procedure_result_ownership_contract(
+        proc_decl,
+        analyzer.emitter,
+    )
+    defer procedure_ownership_contract_delete(&ownership_contract)
     for invoke in analyzer.scalar_invokes {
         borrowed_managed_result := strings.has_suffix(
             invoke.signature,
@@ -389,11 +398,13 @@ semantic_resident_scalar_invoke :: proc(
         managed_return := return_kind == .String || return_kind == .Data
         ownership_compatible := !managed_return ||
             ((proc_decl.returns.single_ownership == .Owned ||
-              proc_decl.owns_result) && owned_managed_result) ||
+              ownership_contract.result_flow == .Owned) &&
+             owned_managed_result) ||
             ((proc_decl.returns.single_ownership == .Borrowed ||
-              proc_decl.borrows_result) && borrowed_managed_result) ||
+              ownership_contract.result_flow == .Borrowed) &&
+             borrowed_managed_result) ||
             (proc_decl.returns.single_ownership == .Default &&
-             !proc_decl.owns_result && !proc_decl.borrows_result &&
+             ownership_contract.result_flow == .Unknown &&
              (borrowed_managed_result || owned_managed_result))
         if invoke.name == resolved_name &&
            (invoke.signature == signature ||
@@ -410,6 +421,7 @@ semantic_resident_scalar_invoke :: proc(
 
 semantic_inferred_scalar_signature :: proc(
     proc_decl: ^Proc_Decl,
+    e: ^Emitter = nil,
     result_ownership := "",
 ) -> string {
     // Semantic planning happens before the ordinary lifetime inference pass,
@@ -420,6 +432,8 @@ semantic_inferred_scalar_signature :: proc(
     // check.
     builder := strings.builder_make()
     defer strings.builder_destroy(&builder)
+    ownership_contract := procedure_result_ownership_contract(proc_decl, e)
+    defer procedure_ownership_contract_delete(&ownership_contract)
     if proc_decl.calling_convention != "" {
         fmt.sbprintf(&builder, "abi=%s;", proc_decl.calling_convention)
     }
@@ -440,10 +454,10 @@ semantic_inferred_scalar_signature :: proc(
         strings.write_byte(&builder, ':')
         strings.write_string(&builder, result_ownership)
     } else if proc_decl.returns.single_ownership == .Owned ||
-       proc_decl.owns_result {
+              ownership_contract.result_flow == .Owned {
         strings.write_string(&builder, ":owned")
     } else if proc_decl.returns.single_ownership == .Borrowed ||
-              proc_decl.borrows_result {
+              ownership_contract.result_flow == .Borrowed {
         strings.write_string(&builder, ":borrowed")
     }
     return strings.clone(strings.to_string(builder))
@@ -480,7 +494,7 @@ semantic_analyze_proc_call :: proc(
     return_kind := Semantic_Value_Kind.Invalid
     invoke_ok := false
     if program_call && proc_decl != nil &&
-       repl_proc_supports_scalar_invoke(proc_decl) {
+       repl_proc_supports_scalar_invoke(proc_decl, analyzer.emitter) {
         return_kind = semantic_value_kind_for_type(
             proc_decl.returns.single_ty,
         )
@@ -492,7 +506,10 @@ semantic_analyze_proc_call :: proc(
             }
         }
         if invoke_ok {
-            invoke.signature = semantic_inferred_scalar_signature(proc_decl)
+            invoke.signature = semantic_inferred_scalar_signature(
+                proc_decl,
+                analyzer.emitter,
+            )
         }
     } else {
         invoke, return_kind, invoke_ok =

@@ -546,35 +546,6 @@ Known_Foreign_Lifetime :: enum {
     Owned,
 }
 
-Foreign_Lifetime_Binding :: struct {
-    target: string,
-    result: Known_Foreign_Lifetime,
-}
-
-FOREIGN_LIFETIME_BINDINGS :: []Foreign_Lifetime_Binding{
-    {"kvist_data_empty_map", .Owned},
-    {"kvist_data_make_unique_set", .Owned},
-    {"kvist_data_freeze_items", .Owned},
-    {"kvist_data_freeze_map", .Owned},
-    {"kvist_data_freeze_unique_map", .Owned},
-    {"kvist_data_retain", .Owned},
-    {"kvist_data_assoc", .Owned},
-    {"kvist_data_update", .Owned},
-    {"kvist_data_dissoc", .Owned},
-    {"kvist_data_conj", .Owned},
-    {"kvist_data_disj", .Owned},
-    {"kvist_data_string", .Borrowed},
-    {"kvist_data_symbol", .Borrowed},
-    {"kvist_data_keyword", .Borrowed},
-    {"kvist_data_text", .Borrowed},
-    {"kvist_data_tag", .Borrowed},
-    {"kvist_data_tagged_value", .Borrowed},
-    {"kvist_data_key_at", .Borrowed},
-    {"kvist_data_value_at", .Borrowed},
-    {"kvist_data_item_at", .Borrowed},
-    {"kvist_data_get", .Borrowed},
-}
-
 known_odin_call_lifetime :: proc(form: CST_Form) -> Known_Foreign_Lifetime {
     if form.kind != .List ||
        len(form.items) < 2 ||
@@ -585,15 +556,15 @@ known_odin_call_lifetime :: proc(form: CST_Form) -> Known_Foreign_Lifetime {
     }
     target := unquote_string(form.items[1].text)
     defer delete(target)
-    // All `kvist_data_make_*` functions are constructors in the Kvist runtime
-    // ABI and return one shared reference owned by the caller.
-    if strings.has_prefix(target, "kvist_data_make_") {
-        return .Owned
+    contract, known := ownership_runtime_contract(target)
+    if !known {
+        return .Unknown
     }
-    for binding in FOREIGN_LIFETIME_BINDINGS {
-        if binding.target == target {
-            return binding.result
-        }
+    #partial switch contract.result_flow {
+    case .Borrowed:
+        return .Borrowed
+    case .Owned:
+        return .Owned
     }
     return .Unknown
 }
@@ -1255,14 +1226,6 @@ form_is_borrowed_view_result :: proc(form: CST_Form, e: ^Emitter = nil) -> bool 
         return true
     }
     return false
-}
-
-borrowed_delete_warning_message :: proc(form: CST_Form) -> string {
-    subject := "borrowed view"
-    if head, ok := form_head_symbol_text(form); ok {
-        subject = display_head_name(head)
-    }
-    return fmt.tprintf("%s returns a borrowed view; do not delete it, delete the owner instead", subject)
 }
 
 form_is_transform_source_call :: proc(e: ^Emitter, form: CST_Form) -> bool {

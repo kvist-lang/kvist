@@ -2477,8 +2477,14 @@ values :: proc(state: ^Raw_Types) -> []int {
 main :: proc() {
     values := []int{1, 2, 3}
     lookup := map[string]int{"one" = 1}
+    kvist_owner_1 := true
+    defer (proc(kvist_place: ^map[string]int, kvist_owner: ^bool) { if kvist_owner^ { delete(kvist_place^) } })(&lookup, &kvist_owner_1)
     buffer_literal := [dynamic]int{1, 2}
+    kvist_owner_2 := true
+    defer (proc(kvist_place: ^[dynamic]int, kvist_owner: ^bool) { if kvist_owner^ { delete(kvist_place^) } })(&buffer_literal, &kvist_owner_2)
     buffer := make([dynamic]int)
+    kvist_owner_3 := true
+    defer (proc(kvist_place: ^[dynamic]int, kvist_owner: ^bool) { if kvist_owner^ { delete(kvist_place^) } })(&buffer, &kvist_owner_3)
     return
 }
 `
@@ -2508,6 +2514,8 @@ compile_compact_type_spellings_inside_vectors :: proc(t: ^testing.T) {
 
 first :: proc(xs: []int, lookup: map[string]int) -> int {
     buffer: [dynamic]int = make([dynamic]int)
+    kvist_owner_1 := true
+    defer (proc(kvist_place: ^[dynamic]int, kvist_owner: ^bool) { if kvist_owner^ { delete(kvist_place^) } })(&buffer, &kvist_owner_1)
     fixed: [3]int = [3]int{1, 2, 3}
     from_map := kvist_get_or_default(lookup, "missing", -1)
     return (xs[0]) + (from_map)

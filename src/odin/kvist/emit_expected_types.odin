@@ -153,6 +153,71 @@ form_head_is_statement_only :: proc(form: CST_Form) -> (string, bool) {
     return "", false
 }
 
+Form_Value_Arity :: enum {
+    Unknown,
+    None,
+    Single,
+    Multiple,
+    Structural,
+}
+
+form_value_arity :: proc(e: ^Emitter, form: CST_Form) -> Form_Value_Arity {
+    // This is a positive semantic classification, not a list of APIs that
+    // happen to be safe. Unknown call surfaces remain unknown until a
+    // declaration, interop contract, or inferred type proves their arity.
+    if form.kind != .List {
+        return .Single
+    }
+    if len(form.items) == 0 || form.items[0].kind != .Symbol {
+        return .Unknown
+    }
+
+    head := form.items[0].text
+    switch head {
+    case "if", "let", "do", "block", "type-case", "match",
+         "with-allocator", "with-temp-allocator":
+        return .Structural
+    case "quote", "quasiquote", "fn", "zero":
+        return .Single
+    }
+    if _, statement_only := form_head_is_statement_only(form); statement_only {
+        return .None
+    }
+    if _, proc_decl, resolved := resolve_proc_call_decl(e, head);
+       resolved && proc_decl != nil {
+        #partial switch proc_decl.returns.kind {
+        case .None:
+            return .None
+        case .Single:
+            return .Single
+        case .Named:
+            if len(proc_decl.returns.named) == 1 {
+                return .Single
+            }
+            if len(proc_decl.returns.named) > 1 {
+                return .Multiple
+            }
+            return .None
+        }
+    }
+    if result_count, known_count := ownership_imported_call_result_count(
+        e,
+        head,
+    ); known_count {
+        if result_count == 1 {
+            return .Single
+        }
+        if result_count > 1 {
+            return .Multiple
+        }
+        return .None
+    }
+    if _, obvious := obvious_form_type(e, form); obvious {
+        return .Single
+    }
+    return .Unknown
+}
+
 proc_decl_type_text :: proc(proc_decl: ^Proc_Decl) -> string {
     builder := strings.builder_make()
     defer strings.builder_destroy(&builder)

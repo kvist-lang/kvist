@@ -757,6 +757,7 @@ macroexpand_source_with_map :: proc(source: string, anchor_path: string = ".") -
         return result, clone_compile_error(err_expand, result_allocator), false
     }
     result.output = strings.clone(temp_result.output, result_allocator)
+    result.ownership_plan_adoptions = temp_result.ownership_plan_adoptions
     context.allocator = result_allocator
     for entry in temp_result.source_map {
         append(&result.source_map, entry)
@@ -982,6 +983,7 @@ macroexpand_eval_source_with_map :: proc(source, eval_source: string, anchor_pat
         return result, clone_compile_error(err_macro, result_allocator), false
     }
     result.output = strings.clone(temp_result.output, result_allocator)
+    result.ownership_plan_adoptions = temp_result.ownership_plan_adoptions
     context.allocator = result_allocator
     for entry in temp_result.source_map {
         append(&result.source_map, entry)

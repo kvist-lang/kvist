@@ -507,7 +507,7 @@ compile_manages_data_local_bindings_and_returns :: proc(t: ^testing.T) {
 
     testing.expect_value(t, strings.contains(output, "return kvist_data_retain(value)"), true)
     testing.expect_value(t, strings.contains(output, "copy := kvist_data_retain(config)"), true)
-    testing.expect_value(t, strings.contains(output, "kvist_data_release(kvist_place^)"), true)
+    testing.expect_value(t, strings.contains(output, "kvist_data_release(kvist_place^)"), false)
     testing.expect_value(t, strings.contains(output, "return (proc(kvist_value: Data, kvist_owner: ^bool) -> Data"), true)
     testing.expect_value(t, strings.contains(output, "return kvist_value })(copy, &kvist_owner_"), true)
     testing.expect_value(t, strings.contains(output, "return kvist_data_retain(kvist_data_get(config"), true)
@@ -1853,6 +1853,29 @@ compile_contextual_data_literals_in_direct_and_overloaded_calls :: proc(t: ^test
     testing.expect_value(t, strings.contains(output, "return kvist_data_contains(result, kvist_thread_"), true)
     testing.expect_value(t, strings.contains(output, "kvist_data_make_text(Data_Kind.String, value)"), true)
     testing.expect_value(t, strings.contains(output, "kvist_data_make_int(i64(index))"), true)
+}
+
+@(test)
+compile_conditional_owned_string_local_lifts_into_data_literal :: proc(t: ^testing.T) {
+    source := `(package main)
+(import fmt "core:fmt")
+
+(defn build [condition: bool] -> Data
+  (let [text (if condition
+               (fmt.aprintf "a")
+               (fmt.aprintf "b"))
+        tx: Data [{:field text}]]
+    tx))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "kvist_data_make_text(Data_Kind.String, text)"), true)
 }
 
 @(test)

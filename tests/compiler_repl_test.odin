@@ -3684,19 +3684,7 @@ cli_repl_accepts_pointer_returns_from_context_and_imported_packages :: proc(
         ),
         true,
     )
-    testing.expect_value(
-        t,
-        strings.contains(
-            output,
-            `"code":"KVO002","confidence":"conservative","phase":"compile"`,
-        ),
-        true,
-    )
-    testing.expect_value(
-        t,
-        strings.contains(output, `"line":9,"column":4,"end_line":9,"end_column":7`),
-        true,
-    )
+    testing.expect_value(t, strings.contains(output, `"code":"KVO002"`), false)
     testing.expect_value(
         t,
         strings.contains(

@@ -266,6 +266,7 @@ compile_program_with_map :: proc(program: AST_Program, profile: ^Compile_Profile
         return result, clone_compile_error(err_emit, result_allocator), false
     }
     result.output = strings.clone(temp_result.output, result_allocator)
+    result.ownership_plan_adoptions = temp_result.ownership_plan_adoptions
     context.allocator = result_allocator
     for entry in temp_result.source_map {
         append(&result.source_map, clone_source_map_entry(entry, result_allocator))
@@ -449,6 +450,7 @@ compile_program_eval_form_with_map :: proc(
         return result, clone_compile_error(err_emit, result_allocator), false
     }
     result.output = strings.clone(temp_result.output, result_allocator)
+    result.ownership_plan_adoptions = temp_result.ownership_plan_adoptions
     context.allocator = result_allocator
     for entry in temp_result.source_map {
         append(&result.source_map, clone_source_map_entry(entry, result_allocator))
@@ -531,6 +533,7 @@ compile_source_with_map :: proc(source: string) -> (result: Emit_Result, err: Co
         return result, clone_compile_error(err_emit, result_allocator), false
     }
     result.output = strings.clone(temp_result.output, result_allocator)
+    result.ownership_plan_adoptions = temp_result.ownership_plan_adoptions
     context.allocator = result_allocator
     for entry in temp_result.source_map {
         append(&result.source_map, clone_source_map_entry(entry, result_allocator))
@@ -683,6 +686,7 @@ compile_eval_source_with_map :: proc(source, eval_source: string, no_print: bool
         return result, clone_compile_error(err_emit, result_allocator), false
     }
     result.output = strings.clone(temp_result.output, result_allocator)
+    result.ownership_plan_adoptions = temp_result.ownership_plan_adoptions
     context.allocator = result_allocator
     for entry in temp_result.source_map {
         append(&result.source_map, clone_source_map_entry(entry, result_allocator))
@@ -788,6 +792,7 @@ compile_path_with_package_artifacts :: proc(
     result.packages_reused = temp_result.packages_reused
     result.packages_emitted = temp_result.packages_emitted
     result.root.output = strings.clone(temp_result.root.output, result_allocator)
+    result.root.ownership_plan_adoptions = temp_result.root.ownership_plan_adoptions
     for entry in temp_result.root.source_map {
         append(&result.root.source_map, clone_source_map_entry(entry, result_allocator))
     }

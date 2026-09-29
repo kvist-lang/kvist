@@ -343,9 +343,11 @@ introduced through raw Odin.
 
 ### Ownership And Cleanup
 
-Kvist uses explicit ownership. Dynamic arrays, maps, sets, built strings, and
-many package helpers return owned storage. The owner must return it, transfer
-it, or clean it up.
+Kvist uses deterministic ownership. Dynamic arrays, maps, sets, built strings,
+and many package helpers return owned storage. When a directly bound native
+string, slice, dynamic array, SOA value, or map is proven not to escape or be
+reassigned, the compiler inserts cleanup at scope exit. Otherwise the owner
+must return it, transfer it, or clean it up explicitly.
 
 Odin's explicit form works:
 
@@ -355,7 +357,8 @@ Odin's explicit form works:
   (println xs))
 ```
 
-For a local binding, prefer the equivalent `:defer` marker:
+Use the equivalent `:defer` marker when you want to state the cleanup contract
+explicitly:
 
 ```clojure
 (let [xs (arr.range 0 10) :defer]
@@ -421,17 +424,25 @@ Use `kvist:regex` for compiled regex ownership and matching helpers:
 (re.matches? #"\d+" "abc123")
 ```
 
-Compiled regexes and capture arrays are ordinary owned Odin values; destroy
-them with `regex.destroy!` and `regex.destroy-capture!` when using the explicit
-compile or match APIs. For scoped locals, use `:defer-with`:
+Compiled regexes and capture arrays are ordinary owned Odin values. For a
+non-escaping destructured result, Kvist knows the exact regex result contract
+and schedules conditional cleanup automatically:
 
 ```clojure
 (let [[compiled err] (re.compile #"^a+$")]
   (if (= err nil)
-    (let [owned compiled :defer-with re.destroy!]
-      (re.matches-compiled? owned "aaa"))
+    (re.matches-compiled? compiled "aaa")
     false))
 ```
+
+Cleanup runs only when compilation succeeded (`err == nil`). The same rule
+applies to the allocated capture returned by `re.match` when `ok` is true, and
+it propagates through simple Kvist wrappers around these calls. If the result
+is aliased, reassigned, explicitly destroyed, or may leave the scope, inference
+backs off. In that case, bind an owning alias with
+`:defer-with re.destroy!` or `:defer-with re.destroy-capture!` when the intended
+ownership is otherwise ambiguous. No ownership annotation is required or
+supported here.
 
 ### Keywords
 
@@ -1091,9 +1102,11 @@ parameter. Callers move compiler-tracked owned locals into consuming calls and
 disable the former scope cleanup; a later use is diagnosed.
 
 Inference is conservative. A function that may return either an input array or
-a new array is not treated as transferring ownership. Unknown or opaque native
-resources keep explicit Odin semantics. Use ordinary cleanup functions with
-`defer`, `:defer`, or `:defer-with`.
+a new array is not treated as transferring ownership. Known native storage is
+cleaned automatically only when ownership, the builtin `delete` operation, and
+non-escape are all proven. Unknown or opaque native resources keep explicit
+Odin semantics. Use ordinary cleanup functions with `defer`, `:defer`, or
+`:defer-with`.
 
 The forms `(owned T)`, `(borrowed T)`, `#owned`, `#borrowed`, and
 `managed:` metadata are not part of Kvist. Procedure names such as
@@ -1148,8 +1161,9 @@ For ordinary construction, use core `str`:
 
 `str` accepts Odin-printable values, does not interpret braces or percent
 signs in its string arguments, and lowers to one allocator-backed
-`fmt.aprintf` call. Its result is always an owned string, including `(str)`, so
-bind it with `:defer`, delete it explicitly, or return it.
+`fmt.aprintf` call. Its result is always an owned string, including `(str)`.
+A non-escaping local binding is cleaned automatically; you may still use
+`:defer`, delete it explicitly, or return it to make the transfer visible.
 
 Use `$T: typeid` when the caller passes a type explicitly:
 
@@ -1352,13 +1366,14 @@ Use this shape when calling Odin-style APIs that return an explicit error value:
 ```clojure
 (defn read-byte-count [path: string] -> int
   (if-ok [[data err] (os.read_entire_file path context.allocator)]
-    (do
-      (defer (delete data))
-      (count data))
+    (count data)
     0))
 ```
 
-This is the ordinary Kvist style for error-returning APIs.
+This is the ordinary Kvist style for error-returning APIs. The exact
+`os.read_entire_file` contract schedules `delete(data)` automatically. Cleanup
+also runs when reading fails because Odin can return an allocated partial
+buffer together with the error.
 
 ## Literals, Constructors, And Conversion
 
@@ -1655,7 +1670,7 @@ from the statically known source type: `Data` uses these Clojure-style rules;
 native arrays and slices use positional indexing; other native expressions use
 multiple-return binding.
 
-Owned local bindings may use the `:defer` marker:
+Owned local bindings may use the `:defer` marker to request explicit cleanup:
 
 ```clojure
 (let [xs (arr.empty int) :defer]
@@ -1663,7 +1678,10 @@ Owned local bindings may use the `:defer` marker:
 ```
 
 This is shorthand for a matching `defer (delete xs)` at the end of the scope.
-Use `:defer-with` when cleanup is a function other than `delete`:
+For a directly owned native string, slice, dynamic array, SOA value, or map,
+the compiler can generate equivalent cleanup without the marker when the value
+is neither reassigned nor transferred. Use `:defer-with` when cleanup is a
+function other than `delete`:
 
 ```clojure
 (let [file (open-file path) :defer-with close-file]
@@ -1828,7 +1846,6 @@ several binding pairs, the else branch is used when any `ok` is false.
 
 ```clojure
 (when-ok [[data err] (os.read_entire_file path context.allocator)]
-  (defer (delete data))
   (println (count data)))
 ```
 
@@ -1839,9 +1856,7 @@ do nothing.
 
 ```clojure
 (if-ok [[data err] (os.read_entire_file path context.allocator)]
-  (do
-    (defer (delete data))
-    (count data))
+  (count data)
   0)
 ```
 
@@ -1894,6 +1909,12 @@ Kvist assigns the result into those slots before checking the guard. If
 `os.read_entire_file` fails, `err` is already set, so the naked return produced
 by `:or-return` returns the captured error.
 
+`:or-return` is an ownership-transfer boundary, so automatic scoped result
+cleanup is not installed there. For `os.read_entire_file`, the returned byte
+slice—including a possible partial buffer on error—belongs to the caller. Use
+`:errdefer` explicitly only when the caller will ignore the value on error and
+the intended contract is to discard that partial buffer.
+
 Because `:or-return` assigns into named return slots, `:errdefer` observes the
 same `err` slot at function exit. If later code sets `err` and returns, the
 owned first value is deleted. If `err` is still nil on success, ownership stays
@@ -1943,9 +1964,10 @@ control flow.
 (discard x y)
 ```
 
-This lowers to `_ = ...` assignments. It is useful when a value is intentionally
-unused, but it does not override ownership rules: discarding a known owned
-result still warns.
+This is useful when a value is intentionally unused. A discarded owned native
+value with a known builtin destructor is evaluated once and deleted
+immediately. Results with multiple values, an unknown type, or an opaque/custom
+destructor still warn because the compiler cannot select safe cleanup.
 
 `defer` emits Odin `defer`. A single expression defers that expression;
 multiple forms defer a block.
@@ -2305,10 +2327,12 @@ In a `->` pipeline, use a `.field` selector step:
 
 Kvist keeps Odin's explicit allocation model. It automatically manages `Data`
 and aggregates whose nontrivial lifetime is structurally derived from `Data`.
-Ordinary native strings, arrays, maps, and opaque resources still use explicit
-Odin-style cleanup. Typed decode results are a narrow exception because the
-decode boundary proves their complete allocation shape. This is deterministic
-management, not tracing garbage collection.
+It also inserts deterministic scope cleanup for directly owned native strings,
+slices, dynamic arrays, SOA values, and maps when their type and non-escape are
+proven. Opaque resources and ambiguous transfers still use explicit Odin-style
+cleanup. Typed decode results are managed because the decode boundary proves
+their complete allocation shape. This is deterministic management, not tracing
+garbage collection.
 
 If a value owns dynamic storage, delete it when the current scope is done with
 it. The common owned values are dynamic arrays, maps, and helper results that
@@ -2322,18 +2346,30 @@ create them.
 
 The practical ownership rules are:
 
-- allocating native expressions remain explicit; use `defer`, `:defer`, or
-  `:defer-with`
+- allocation remains visible, while proven non-escaping native storage gets
+  generated cleanup at scope exit
+- use `defer`, `:defer`, or `:defer-with` to state cleanup explicitly or when
+  automatic cleanup cannot prove the destructor and transfer behavior
 - a parameter is inferred as consuming when the procedure body explicitly
   deletes it or transfers it through a proven owning result
 - parameters otherwise borrow
 - if every return path proves a new value, ownership transfers to the caller
-- borrowed views must not be deleted
+- borrowed views must not be deleted; provenance is tracked through local
+  aliases, reassignment, ordinary control-flow joins, and owner cleanup across
+  fallthrough, `break`, and `continue` scope exits
 - compiler-tracked `Data`, structs whose lifetime derives from contained
   `Data`, and decoded structural results receive deterministic generated
   cleanup
-- ambiguous or opaque imported resources use explicit `defer`, `:defer`, or
-  `:defer-with`
+- ambiguous opaque imported resources use explicit `defer`, `:defer`, or
+  `:defer-with`; exact foreign-result contracts may provide automatic cleanup
+  per returned value
+- `os.read_entire_file` automatically deletes a non-escaping destructured byte
+  slice, including a partial allocation returned together with an error
+- `os.open`, `os.create`, and `os.clone` automatically close a non-escaping
+  destructured file handle when the sibling error result is nil
+- closure capture and aggregate or mutable storage make that cleanup ambiguous;
+  automatic cleanup is skipped and ownership audit asks for explicit cleanup
+  or an ownership transfer
 - cleanup-like procedure names do not change a type's semantics
 - `:defer` is scope cleanup for ordinary owned values
 - `:defer-with` is scope cleanup through a named cleanup function
@@ -2396,19 +2432,25 @@ the result type:
   count)
 ```
 
-The compiler also has coded ownership warnings for obvious mistakes. These
-warnings are advisory. They do not turn native values into an automatic
-ownership system, and they do not add hidden native cleanup to generated Odin.
+The compiler also has coded ownership warnings for obvious mistakes. Warnings
+are omitted when generated cleanup is proven safe. Remaining warnings identify
+cases where cleanup or transfer is still ambiguous, including opaque resources,
+multiple results, reassignment, and path-dependent ownership. Formatted
+warnings include the source line and a caret at the reported span.
 
 Normal commands report definite findings. Add `--ownership-audit` to include
 conservative findings from the flow analysis:
 
 ```text
-warning[KVO001]: owned result from arr.range is discarded; bind it, delete it, or return it
-warning[KVO002, conservative]: owned local xs is never deleted or returned; add (defer (delete xs)) or return it
+warning[KVO001]: owned result from re.compile is discarded; destructure its results for automatic scoped cleanup, or return it
+warning[KVO002]: owned local xs is never deleted or returned; add (defer (delete xs)) or return it
 warning[KVO004]: owned local xs is overwritten before cleanup; delete it or return it before set!
 warning[KVO003, conservative]: owned local xs is used after ownership transfer
 warning[KVO005, conservative]: borrowed value escapes owner xs
+warning[KVO005]: borrowed value is used after owner `xs` has been destroyed; move the use before cleanup or create an owned copy
+warning[KVO006]: str.trim returns a borrowed view; do not delete it, delete the owner instead
+warning[KVO006, conservative]: borrowed local `view` must not be deleted; delete the owner instead
+warning[KVO008, conservative]: automatic cleanup for owned result `file` was skipped because it is captured by a closure; clean it up explicitly after its last use or transfer ownership
 ```
 
 Equivalent findings at the same source location are printed once. The compiler
@@ -2416,12 +2458,17 @@ API retains every warning with its stable `code` and `confidence` fields so
 tools can choose their own policy. Explicit deferred destructors whose names
 identify destroy, free, close, or release operations are recognized as cleanup.
 
-The audit pass is intentionally conservative. It recognizes allocating return
-paths, known owned-result helpers such as `arr.range`, `arr.empty`,
+The ownership analysis is intentionally conservative where a fact holds on
+only some control-flow paths. It recognizes allocating return paths, known
+owned-result helpers such as `arr.range`, `arr.empty`,
 `map.empty`, and `set.union`; borrowed views that alias compatible inputs or
 known view helpers such as `slice`, `arr.slice`, and `arr.rest`; and ownership
 transfers such as `delete`, returning an owned local, and passing an owned local
 into a consuming operation inferred from its body.
+
+The compiler architecture, event meanings, manual-control guarantees, and
+deliberate analysis boundaries are described in
+[Ownership And Deterministic Cleanup](ownership.md).
 
 For example:
 
@@ -2433,6 +2480,21 @@ For example:
 
 This warns because the returned slice is a borrowed view into `xs`, and `xs` is
 deleted when the `let` scope exits.
+
+The same provenance is retained after explicit cleanup. A later use warns at
+the use site, while an unused or reassigned view does not:
+
+```clojure
+(defn stale-view [] -> int
+  (let [xs (arr.empty int)
+        view (arr.slice xs 0 0)]
+    (delete xs)
+    (count view))) ; KVO005: view depends on the destroyed owner xs
+```
+
+If only some paths destroy `xs`, the warning is conservative. Assigning a new
+value to `view` clears the stale provenance. No ownership annotation is
+required for either case.
 
 Valid local use of the same borrowed view does not warn:
 
@@ -2845,11 +2907,12 @@ updates, destructuring, validation, and typed boundaries.
 
 (let [[pattern err] (regex.compile #"^[a-z]+$")]
   (when (= err nil)
-    (let [owned pattern :defer-with regex.destroy!]
-      (println (regex.matches-compiled? owned "kvist")))))
+    (println (regex.matches-compiled? pattern "kvist"))))
 ```
 
-Compiled regexes and captures use their package cleanup functions. See the
+The compiler conditionally destroys this non-escaping `pattern` after the
+scope. Compiled regexes and captures still use their package cleanup functions
+when cleanup is explicit or ownership leaves the inferred case. See the
 [package source](../src/kvist/regex/regex.kvist) for matching and capture APIs.
 
 ### Parallel Work And Tests

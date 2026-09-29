@@ -103,6 +103,10 @@ ownership warnings that are hidden by default:
 kvist check file.kvist --ownership-audit
 ```
 
+Warnings have stable codes and confidence levels, and their formatted output
+includes the relevant source line and caret. Ownership warnings are suppressed
+when the compiler proves and emits deterministic native cleanup.
+
 ## Packages
 
 `kvist:*` imports resolve from:

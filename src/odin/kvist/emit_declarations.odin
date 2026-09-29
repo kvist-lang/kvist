@@ -282,11 +282,6 @@ emit_decl :: proc(e: ^Emitter, decl: IR_Decl) -> (Compile_Error, bool) {
         e.indent -= 1
         emit_line(e, "}")
     case .Proc:
-        proc_live: [dynamic]Owned_Local
-        proc_borrowed: [dynamic]Borrowed_Local
-        analyze_owned_scope_body(e, decl.proc_decl.body[:], decl.proc_decl.returns.kind != .None, &proc_live, &proc_borrowed)
-        delete(proc_live)
-        delete(proc_borrowed)
         lint_defer_in_loop_body(e, decl.proc_decl.body[:], false)
         push_local_type_scope(e)
         defer pop_local_type_scope(e)
@@ -353,10 +348,33 @@ emit_decl :: proc(e: ^Emitter, decl: IR_Decl) -> (Compile_Error, bool) {
         previous_borrows_managed_result := e.current_proc_borrows_managed_result
         previous_proc_returns := e.current_proc_returns
         previous_proc_zero_value := e.current_proc_zero_value
-        e.current_proc_owns_managed_result = decl.proc_decl.owns_result
-        e.current_proc_borrows_managed_result = decl.proc_decl.borrows_result
+        previous_ownership_shadow := e.current_ownership_shadow
+        previous_ownership_plan := e.current_ownership_plan
+        ownership_proc := decl.proc_decl
+        ownership_shadow, ownership_plan := ownership_ir_plan_proc(
+            e,
+            &ownership_proc,
+        )
+        defer ownership_ir_cleanup_plan_delete(&ownership_plan)
+        defer ownership_ir_shadow_proc_delete(&ownership_shadow)
+        emit_ownership_plan_diagnostics(e, ownership_plan)
+        ownership_contract := procedure_result_ownership_contract(
+            &ownership_proc,
+            e,
+        )
+        defer procedure_ownership_contract_delete(&ownership_contract)
+        e.current_proc_owns_managed_result =
+            ownership_contract.result_flow == .Owned
+        e.current_proc_borrows_managed_result =
+            ownership_contract.result_flow == .Borrowed
         e.current_proc_returns = decl.proc_decl.returns
         e.current_proc_zero_value = ""
+        e.current_ownership_shadow = nil
+        e.current_ownership_plan = nil
+        if ownership_plan.valid {
+            e.current_ownership_shadow = &ownership_shadow
+            e.current_ownership_plan = &ownership_plan
+        }
         if e.repl_debug_enabled &&
            decl.proc_decl.calling_convention != "" {
             // Foreign calling conventions do not receive Odin's implicit
@@ -405,6 +423,8 @@ emit_decl :: proc(e: ^Emitter, decl: IR_Decl) -> (Compile_Error, bool) {
         e.current_proc_borrows_managed_result = previous_borrows_managed_result
         e.current_proc_returns = previous_proc_returns
         e.current_proc_zero_value = previous_proc_zero_value
+        e.current_ownership_shadow = previous_ownership_shadow
+        e.current_ownership_plan = previous_ownership_plan
         if !ok_body {
             return err_body, false
         }

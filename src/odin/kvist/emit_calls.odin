@@ -994,6 +994,8 @@ emit_named_call_with_defaults :: proc(e: ^Emitter, proc_decl: ^Proc_Decl, named_
     defer delete(provided_names)
     provided_forms := make([dynamic]CST_Form, 0, len(named_args)/2)
     defer delete(provided_forms)
+    ownership_contract := procedure_ownership_contract(proc_decl, e)
+    defer procedure_ownership_contract_delete(&ownership_contract)
 
     seen: [dynamic]string
     for i := 0; i < len(named_args); i += 2 {
@@ -1020,11 +1022,19 @@ emit_named_call_with_defaults :: proc(e: ^Emitter, proc_decl: ^Proc_Decl, named_
             }
             return arg_texts, Compile_Error{message = named_arg_message_with_valid_keys(message, proc_decl), span = key.span}, false
         }
+        ownership := param.ownership
+        if procedure_ownership_contract_consumes_name(
+            &ownership_contract,
+            proc_decl,
+            field_name,
+        ) {
+            ownership = .Owned
+        }
         value_text, err_value, ok_value := emit_call_arg_for_expected_type(
             e,
             value,
             param.ty,
-            param.ownership,
+            ownership,
         )
         if !ok_value {
             return arg_texts, err_value, false
@@ -1076,7 +1086,16 @@ emit_call_arg_for_expected_type :: proc(
     if ownership == .Owned && arg.kind == .Symbol {
         name := map_name(arg.text)
         defer delete(name)
-        if owner_flag, ok_owner := lookup_managed_local_owner(e, name); ok_owner {
+        owner_flag, ok_owner := lookup_managed_local_owner(e, name)
+        if !ok_owner {
+            owner_flag, ok_owner = ownership_ir_active_event_owner_flag(
+                e,
+                name,
+                arg.span,
+                .Transfer,
+            )
+        }
+        if ok_owner {
             return managed_move_local_value_text(e, expected_type, value, owner_flag), {}, true
         }
     }
@@ -1104,6 +1123,8 @@ emit_positional_call_with_defaults :: proc(e: ^Emitter, proc_decl: ^Proc_Decl, a
         }
     }
     defer delete(params)
+    ownership_contract := procedure_ownership_contract(proc_decl, e)
+    defer procedure_ownership_contract_delete(&ownership_contract)
 
     provided_names := make([dynamic]string, 0, len(args))
     defer delete(provided_names)
@@ -1111,11 +1132,18 @@ emit_positional_call_with_defaults :: proc(e: ^Emitter, proc_decl: ^Proc_Decl, a
     defer delete(provided_forms)
 
     for arg, arg_idx in args {
+        ownership := params[arg_idx].ownership
+        if procedure_ownership_contract_consumes(
+            &ownership_contract,
+            arg_idx,
+        ) {
+            ownership = .Owned
+        }
         arg_text, err_arg, ok_arg := emit_call_arg_for_expected_type(
             e,
             arg,
             params[arg_idx].ty,
-            params[arg_idx].ownership,
+            ownership,
         )
         if !ok_arg {
             return arg_texts, err_arg, false

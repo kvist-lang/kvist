@@ -73,11 +73,58 @@ emit_statement_expr :: proc(
     expr: string,
     discard_result: bool,
 ) {
-    if discard_result && !form_is_known_void_call(e, form) {
+    if (discard_result || form_is_literal_constructor_call(form, e)) &&
+       !form_is_known_void_call(e, form) {
         emit_discarded_expr(e, form, expr)
         return
     }
     emit_prefixed_expr_mapped(e, "", expr, form.span)
+}
+
+emit_return_expr_with_ownership_cleanup :: proc(
+    e: ^Emitter,
+    value_form: CST_Form,
+    exit_span: Span,
+    expr: string,
+    returns: Return_Spec,
+) {
+    value := managed_return_value_text(e, value_form, expr, returns)
+    if !ownership_ir_active_edge_has_cleanup(e, exit_span, .Return) {
+        emit_prefixed_expr_mapped(e, "return ", value, value_form.span)
+        return
+    }
+
+    // Preserve source evaluation order and keep the returned value alive
+    // while cleanup runs on the remaining owners.
+    temp := thread_temp_name(e)
+    if returns.kind == .Single {
+        emit_prefixed_expr_mapped(
+            e,
+            fmt.tprintf("%s: %s = ", temp, returns.single_ty),
+            value,
+            value_form.span,
+        )
+    } else if returns.kind == .Named && len(returns.named) == 1 {
+        emit_prefixed_expr_mapped(
+            e,
+            fmt.tprintf("%s: %s = ", temp, returns.named[0].ty),
+            value,
+            value_form.span,
+        )
+    } else {
+        emit_prefixed_expr_mapped(
+            e,
+            fmt.tprintf("%s := ", temp),
+            value,
+            value_form.span,
+        )
+    }
+    ownership_ir_emit_active_edge_cleanups(e, exit_span, .Return)
+    emit_line_mapped(
+        e,
+        fmt.tprintf("return %s", temp),
+        value_form.span,
+    )
 }
 
 emit_local_var_stmt :: proc(e: ^Emitter, form: CST_Form) -> (Compile_Error, bool) {
@@ -570,10 +617,14 @@ emit_stmt :: proc(
             return err_expr, false
         }
         if last_in_proc && returns.kind != .None {
-            expr = managed_return_value_text(e, form, expr, returns)
-            emit_prefixed_expr_mapped(e, "return ", expr, form.span)
-        } else if form_is_owned_allocation_result(form) ||
-                  form_is_owned_constructor_result(form) ||
+            emit_return_expr_with_ownership_cleanup(
+                e,
+                form,
+                form.span,
+                expr,
+                returns,
+            )
+        } else if form_requires_owned_discard_cleanup(e, form) ||
                   discard_result {
             emit_discarded_expr(e, form, expr)
         } else {
@@ -600,10 +651,14 @@ emit_stmt :: proc(
             return err_expr, false
         }
         if last_in_proc && returns.kind != .None {
-            expr = managed_return_value_text(e, form, expr, returns)
-            emit_prefixed_expr_mapped(e, "return ", expr, form.span)
-        } else if form_is_owned_allocation_result(form) ||
-                  form_is_owned_constructor_result(form) ||
+            emit_return_expr_with_ownership_cleanup(
+                e,
+                form,
+                form.span,
+                expr,
+                returns,
+            )
+        } else if form_requires_owned_discard_cleanup(e, form) ||
                   discard_result {
             emit_discarded_expr(e, form, expr)
         } else {
@@ -661,8 +716,13 @@ emit_stmt :: proc(
             if !ok_value {
                 return err_value, false
             }
-            value = managed_return_value_text(e, form, value, returns)
-            emit_prefixed_expr_mapped(e, "return ", value, form.span)
+            emit_return_expr_with_ownership_cleanup(
+                e,
+                form,
+                form.span,
+                value,
+                returns,
+            )
             return {}, true
         }
         return validate_zero_stmt(form)
@@ -715,6 +775,11 @@ emit_stmt :: proc(
                 return err_let_defer_return, false
             }
         }
+        err_defer_transfer, bad_defer_transfer :=
+            let_defer_transfer_error(e, bindings[:], body[:])
+        if bad_defer_transfer {
+            return err_defer_transfer, false
+        }
         push_local_type_scope(e)
         defer pop_local_type_scope(e)
         scoped := !last_in_proc
@@ -722,9 +787,15 @@ emit_stmt :: proc(
             emit_line(e, "{")
             e.indent += 1
         }
-        for binding in bindings {
+        ownership_per_exit_mark := len(e.ownership_active_per_exit_places)
+        defer resize(
+            &e.ownership_active_per_exit_places,
+            ownership_per_exit_mark,
+        )
+        for binding, binding_index in bindings {
             managed := false
             managed_ty := ""
+            automatic_native := false
             if binding_is_native_sequence_destructure(e, binding) {
                 err_native, ok_native := emit_native_sequence_let_binding(e, binding)
                 if !ok_native {
@@ -756,7 +827,8 @@ emit_stmt :: proc(
                 if !ok_value {
                     return err_value, false
                 }
-                value, managed_ty, managed = managed_binding_value_text(e, binding, value)
+                value, managed_ty, managed, automatic_native =
+                    managed_binding_value_text(e, binding, value)
                 if binding.is_result_binding && binding.or_modifier == "or-return" {
                     if !named_returns_match_binding_pattern(returns, binding.pattern[:]) {
                         return Compile_Error{
@@ -767,7 +839,13 @@ emit_stmt :: proc(
                     emit_result_binding_named_return_assignment(e, binding, value)
                 } else {
                     emit_binding_assignment(e, binding, value)
-                    emit_managed_destructure_cleanup(e, binding)
+                    emit_managed_destructure_cleanup(
+                        e,
+                        binding,
+                        bindings[:],
+                        binding_index,
+                        body[:],
+                    )
                 }
             }
             err_guard, ok_guard := emit_result_binding_guard(e, binding, returns)
@@ -793,21 +871,67 @@ emit_stmt :: proc(
                 }
             }
             bind_obvious_binding_types(e, binding)
+            ownership_ir_activate_bound_aggregate_places(
+                e,
+                binding,
+            )
+            install_managed_cleanup := false
+            plan_tracks_managed_owner := false
+            cleanup_plan_tracked := false
             if managed &&
                !binding.deferred_delete &&
                !binding.err_deferred_delete &&
-               !binding.defer_with_cleanup &&
-               !body_deletes_name(body[:], binding.name) {
+               !binding.defer_with_cleanup {
+                cleanup_strategy := Ownership_IR_Automatic_Cleanup.Managed
+                if automatic_native {
+                    cleanup_strategy = .Native
+                }
+                install_managed_cleanup,
+                plan_tracks_managed_owner,
+                cleanup_plan_tracked =
+                    ownership_ir_current_binding_cleanup(
+                        e,
+                        binding,
+                        cleanup_strategy,
+                    )
+                if !cleanup_plan_tracked {
+                    if automatic_native {
+                        install_managed_cleanup =
+                            !later_bindings_transfer_name(
+                                e,
+                                bindings[:],
+                                binding_index,
+                                binding.name,
+                            ) &&
+                            !body_assigns_name(body[:], binding.name) &&
+                            !body_deletes_or_returns_name(
+                                e,
+                                body[:],
+                                binding.name,
+                                true,
+                            )
+                    } else {
+                        install_managed_cleanup =
+                            !body_deletes_name(body[:], binding.name)
+                    }
+                }
+            }
+            if install_managed_cleanup || plan_tracks_managed_owner {
                 owner_flag := managed_owner_flag_name(e)
                 emit_line(e, fmt.tprintf("%s := true", owner_flag))
-                emit_line(e, fmt.tprintf(
-                    "defer (proc(kvist_place: ^%s, kvist_owner: ^bool) {{ if kvist_owner^ {{ %s }} }})(&%s, &%s)",
-                    managed_ty,
-                    ownership_destroy_value_text(e, managed_ty, "kvist_place^"),
-                    binding.name,
-                    owner_flag,
-                ))
+                if install_managed_cleanup {
+                    emit_line(e, fmt.tprintf(
+                        "defer (proc(kvist_place: ^%s, kvist_owner: ^bool) {{ if kvist_owner^ {{ %s }} }})(&%s, &%s)",
+                        managed_ty,
+                        ownership_destroy_value_text(e, managed_ty, "kvist_place^"),
+                        binding.name,
+                        owner_flag,
+                    ))
+                }
                 bind_managed_local_owner(e, binding.name, owner_flag)
+                if cleanup_plan_tracked {
+                    e.ownership_plan_adoptions += 1
+                }
             }
         }
         err_body, ok_body := emit_body_forms(
@@ -819,6 +943,11 @@ emit_stmt :: proc(
         if !ok_body {
             return err_body, false
         }
+        ownership_ir_emit_active_edge_cleanups(
+            e,
+            form.span,
+            .Fallthrough,
+        )
         if scoped {
             e.indent -= 1
             emit_line(e, "}")
@@ -877,7 +1006,15 @@ emit_stmt :: proc(
         if return_context.kind == .None {
             return_context = e.current_proc_returns
         }
+        edge_cleanup := ownership_ir_active_edge_has_cleanup(
+            e,
+            form.span,
+            .Return,
+        )
         if len(form.items) == 1 {
+            if edge_cleanup {
+                ownership_ir_emit_active_edge_cleanups(e, form.span, .Return)
+            }
             emit_line(e, "return")
             return {}, true
         }
@@ -901,8 +1038,13 @@ emit_stmt :: proc(
             if !ok_value {
                 return err_value, false
             }
-            value = managed_return_value_text(e, form.items[1], value, return_context)
-            emit_prefixed_expr_mapped(e, "return ", value, form.items[1].span)
+            emit_return_expr_with_ownership_cleanup(
+                e,
+                form.items[1],
+                form.span,
+                value,
+                return_context,
+            )
             return {}, true
         }
         line_builder := strings.builder_make()
@@ -930,7 +1072,34 @@ emit_stmt :: proc(
             if return_context.kind == .Named && idx < len(return_context.named) {
                 value = managed_return_value_text_for_type(e, item, value, return_context.named[idx].ty)
             }
-            strings.write_string(&line_builder, value)
+            if edge_cleanup {
+                temp := thread_temp_name(e)
+                if return_context.kind == .Named && idx < len(return_context.named) {
+                    emit_prefixed_expr_mapped(
+                        e,
+                        fmt.tprintf(
+                            "%s: %s = ",
+                            temp,
+                            return_context.named[idx].ty,
+                        ),
+                        value,
+                        item.span,
+                    )
+                } else {
+                    emit_prefixed_expr_mapped(
+                        e,
+                        fmt.tprintf("%s := ", temp),
+                        value,
+                        item.span,
+                    )
+                }
+                strings.write_string(&line_builder, temp)
+            } else {
+                strings.write_string(&line_builder, value)
+            }
+        }
+        if edge_cleanup {
+            ownership_ir_emit_active_edge_cleanups(e, form.span, .Return)
         }
         emit_line_mapped(e, strings.clone(strings.to_string(line_builder)), form.items[1].span)
         return {}, true
@@ -1482,12 +1651,14 @@ emit_stmt :: proc(
         if len(form.items) != 1 {
             return Compile_Error{message = "break does not take arguments", span = form.span}, false
         }
+        ownership_ir_emit_active_edge_cleanups(e, form.span, .Break)
         emit_line(e, "break")
         return {}, true
     case "continue":
         if len(form.items) != 1 {
             return Compile_Error{message = "continue does not take arguments", span = form.span}, false
         }
+        ownership_ir_emit_active_edge_cleanups(e, form.span, .Continue)
         emit_line(e, "continue")
         return {}, true
     case "defer":
@@ -1735,6 +1906,7 @@ emit_stmt :: proc(
         return {}, true
     case:
         allow_root_owned := last_in_proc && returns.kind != .None
+        discard_owned := form_requires_owned_discard_cleanup(e, form)
         if last_in_proc &&
            returns.kind != .None &&
            form_is_borrowed_view_result(form, e) &&
@@ -1744,7 +1916,7 @@ emit_stmt :: proc(
                 span = form.span,
             }, false
         }
-        if !(form_produces_owned_value(form, e) && !allow_root_owned) {
+        if !(discard_owned && !allow_root_owned) {
             err_owned, bad_owned := owned_result_usage_error(form, allow_root_owned, e)
             if bad_owned {
                 return err_owned, false
@@ -1764,17 +1936,31 @@ emit_stmt :: proc(
             return err_expr, false
         }
         if last_in_proc && returns.kind != .None {
-            expr = managed_return_value_text(e, form, expr, returns)
-            emit_prefixed_expr_mapped(e, "return ", expr, form.span)
-        } else if form_is_owned_allocation_result(form) || form_is_owned_constructor_result(form) {
+            if form_value_arity(e, form) == .Single {
+                emit_return_expr_with_ownership_cleanup(
+                    e,
+                    form,
+                    form.span,
+                    expr,
+                    returns,
+                )
+            } else {
+                expr = managed_return_value_text(e, form, expr, returns)
+                emit_prefixed_expr_mapped(e, "return ", expr, form.span)
+            }
+        } else if discard_owned {
             emit_discarded_expr(e, form, expr)
         } else {
             emit_statement_expr(e, form, expr, discard_result)
         }
+        ownership_ir_emit_active_destroy_updates(e, form)
         if canonical_head_text == "delete" {
             for item in form.items[1:] {
                 if item.kind == .Symbol {
                     name := map_name(item.text)
+                    if owner_flag, ok_owner := lookup_managed_local_owner(e, name); ok_owner {
+                        emit_line_mapped(e, fmt.tprintf("%s = false", owner_flag), item.span)
+                    }
                     mark_debug_local_unavailable(e, name)
                     delete(name)
                 }

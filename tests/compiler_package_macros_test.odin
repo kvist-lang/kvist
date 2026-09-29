@@ -1385,7 +1385,7 @@ warn_discarded_third_party_macro_impl_result_from_actual_decl :: proc(t: ^testin
     testing.expect_value(t, strings.contains(result.output, "support__join_impl(xs, ys)"), true)
     testing.expect_value(t, len(result.warnings), 1)
     if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.join is discarded; bind it, delete it, or return it")
+        testing.expect_value(t, result.warnings[0].message, "owned result from support.join is discarded; bind it and clean it up, or return it")
     }
 }
 

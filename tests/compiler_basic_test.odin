@@ -1130,7 +1130,11 @@ Point :: struct {
 
 score :: proc() -> int {
     xs := [dynamic]int{1, 2, 3}
+    kvist_owner_1 := true
+    defer (proc(kvist_place: ^[dynamic]int, kvist_owner: ^bool) { if kvist_owner^ { delete(kvist_place^) } })(&xs, &kvist_owner_1)
     lookup := map[string]int{"a" = 1}
+    kvist_owner_2 := true
+    defer (proc(kvist_place: ^map[string]int, kvist_owner: ^bool) { if kvist_owner^ { delete(kvist_place^) } })(&lookup, &kvist_owner_2)
     point := Point{x = 4, y = 5}
     (xs)[1] += 40
     (xs)[2] += 3

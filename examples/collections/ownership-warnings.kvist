@@ -2,22 +2,19 @@
 (package main)
 (import core "kvist:core")
 (import arr "kvist:arr")
-
-(defn make-values [] -> [dynamic]int
-  (make [dynamic]int))
+(import re "kvist:regex")
 
 (defn discarded-owned-result-demo []
-  (make-values)
+  ;; Multiple/opaque results need an explicit binding and resource-specific
+  ;; cleanup; the compiler cannot insert plain `delete` for the call.
+  (re.compile #"^a+$")
   (println "discarded"))
 
 (defn leaked-owned-local-demo []
-  (let [xs (arr.empty int)]
-    (println (count xs))))
-
-(defn overwritten-owned-local-demo []
+  ;; Reassignment prevents automatic scope cleanup because the previous
+  ;; allocation would otherwise be overwritten first.
   (let [xs (arr.empty int)]
     (set! xs (arr.empty int))
-    (defer (delete xs))
     (println (count xs))))
 
 (defn use-after-transfer-demo []
@@ -28,6 +25,12 @@
 (defn borrowed-escape-demo [] -> []int
   (let [xs (arr.range 0 10) :defer]
     (arr.slice xs 0 3)))
+
+(defn borrowed-use-after-delete-demo []
+  (let [xs (arr.empty int)
+        view (arr.slice xs 0 0)]
+    (delete xs)
+    (println (count view))))
 
 (defn main []
   (println "Run with `--ownership-audit` to include conservative warnings."))
@@ -41,14 +44,15 @@
   ;;   kvist check examples/collections/ownership-warnings.kvist --ownership-audit
   ;;
   ;; Expected warnings include:
-  ;; - owned value is discarded; bind it, delete it, or return it
+  ;; - owned result from re.compile is discarded
   ;; - owned local xs is never deleted or returned
   ;; - owned local xs is overwritten before cleanup
   ;; - owned local xs is used after ownership transfer
   ;; - borrowed value escapes owner xs
+  ;; - borrowed value is used after owner xs has been destroyed
   (discarded-owned-result-demo)
   (leaked-owned-local-demo)
-  (overwritten-owned-local-demo)
   (use-after-transfer-demo)
   (borrowed-escape-demo)
+  (borrowed-use-after-delete-demo)
 )

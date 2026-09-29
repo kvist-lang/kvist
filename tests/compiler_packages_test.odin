@@ -1827,10 +1827,69 @@ compile_regex_package_helpers :: proc(t: ^testing.T) {
     testing.expect_value(t, strings.contains(output, `re__matches_p("\\d+", "abc123")`), true)
     testing.expect_value(t, strings.contains(output, `re__matches_p("^\\d+$", "abc123")`), true)
     testing.expect_value(t, strings.contains(output, `compiled, err := re__compile("^a+$")`), true)
+    testing.expect_value(t, strings.contains(output, "if err == nil {"), true)
+    testing.expect_value(t, strings.contains(output, "rx.destroy(compiled)"), true)
     testing.expect_value(t, strings.contains(output, "owned_compiled := compiled"), true)
     testing.expect_value(t, strings.contains(output, "defer re__destroy_bang(owned_compiled)"), true)
     testing.expect_value(t, strings.contains(output, `re__matches_compiled_p(owned_compiled, "aaa")`), true)
     testing.expect_value(t, strings.contains(output, "#owned"), false)
+}
+
+@(test)
+compile_regex_results_get_inferred_conditional_cleanup :: proc(t: ^testing.T) {
+    source := `(package main)
+(import re "kvist:regex")
+
+(defn compile-pattern [pattern: re.Pattern] -> [value: re.Regex, err: re.Error]
+  (re.compile pattern))
+
+(defn direct-demo [] -> bool
+  (let [[auto-compiled auto-err] (re.compile #"^a+$")]
+    (if (!= auto-err nil)
+      false
+      (re.matches-compiled? auto-compiled "aaa"))))
+
+(defn wrapped-demo [] -> bool
+  (let [[wrapped-compiled wrapped-err] (compile-pattern #"^b+$")]
+    (if (!= wrapped-err nil)
+      false
+      (re.matches-compiled? wrapped-compiled "bbb"))))
+
+(defn capture-demo [compiled: re.Regex] -> bool
+  (let [[auto-capture matched?] (re.match compiled "aaa")]
+    matched?))
+
+(defn transfer-on-one-branch [take?: bool] -> re.Regex
+  (let [[branch-compiled branch-err] (re.compile #"^d+$")]
+    (if take?
+      branch-compiled
+      (zero re.Regex))))
+
+(defn manual-demo [] -> bool
+  (let [[manual-compiled manual-err] (re.compile #"^c+$")]
+    (if (!= manual-err nil)
+      false
+      (let [owned-manual manual-compiled :defer-with re.destroy!]
+        (re.matches-compiled? owned-manual "ccc")))))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+    testing.expect_value(t, strings.contains(output, "if auto_err == nil {"), true)
+    testing.expect_value(t, strings.contains(output, "rx.destroy(auto_compiled)"), true)
+    testing.expect_value(t, strings.contains(output, "if wrapped_err == nil {"), true)
+    testing.expect_value(t, strings.contains(output, "rx.destroy(wrapped_compiled)"), true)
+    testing.expect_value(t, strings.contains(output, "if matched_p {"), true)
+    testing.expect_value(t, strings.contains(output, "rx.destroy(auto_capture)"), true)
+    testing.expect_value(t, strings.contains(output, "rx.destroy(branch_compiled)"), false)
+    testing.expect_value(t, strings.contains(output, "defer re__destroy_bang(owned_manual)"), true)
+    testing.expect_value(t, strings.contains(output, "rx.destroy(manual_compiled)"), false)
+    testing.expect_value(t, strings.contains(output, "#owned"), false)
+    testing.expect_value(t, strings.contains(output, "#borrowed"), false)
 }
 
 @(test)

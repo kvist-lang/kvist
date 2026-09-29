@@ -9,6 +9,164 @@ import "core:testing"
 import kvist "../src/odin/kvist"
 
 @(test)
+managed_data_local_cleanup_is_driven_by_ownership_plan :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defn use []
+  (let [value: Data {:answer 42}]
+    (println (count value))))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, result.ownership_plan_adoptions, 1)
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "defer (proc(kvist_place: ^Data, kvist_owner: ^bool)",
+        ),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "kvist_data_release(kvist_place^)"),
+        true,
+    )
+}
+
+@(test)
+managed_data_local_return_transfer_needs_no_cleanup :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defn make-value [] -> Data
+  (let [value: Data {:answer 42}]
+    value))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, result.ownership_plan_adoptions, 1)
+    testing.expect_value(t, strings.contains(result.output, "defer (proc(kvist_place: ^Data"), false)
+    testing.expect_value(t, strings.contains(result.output, "kvist_owner_1 := true"), true)
+    testing.expect_value(t, strings.contains(result.output, "return kvist_value })(value, &kvist_owner_1)"), true)
+}
+
+@(test)
+managed_data_local_cleanup_survives_conditional_transfer :: proc(t: ^testing.T) {
+    source := `(package main)
+(import data "kvist:data")
+
+(defn consume [value: Data] -> int
+  (data.release value)
+  1)
+
+(defn use [transfer?: bool]
+  (let [value: Data {:answer 42}]
+    (if transfer?
+      (println (consume value))
+      (println 0))
+    (println 2)))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect(t, result.ownership_plan_adoptions > 0)
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "if kvist_owner^ { kvist_data_release(kvist_place^) }",
+        ),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "consume((proc(kvist_value: Data, kvist_owner: ^bool)",
+        ),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "kvist_owner^ = false; return kvist_value",
+        ),
+        true,
+    )
+}
+
+@(test)
+managed_parameter_stored_in_result_remains_borrowed :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defstruct Box [
+  value: Data
+])
+
+(defn make-box [value: Data] -> Box
+  (Box :value value))
+
+(defn use [value: Data]
+  (discard (make-box value))
+  (discard (make-box value)))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "return Box{value = kvist_data_retain(value)}",
+        ),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "make_box((proc(kvist_value: Data, kvist_owner: ^bool)",
+        ),
+        false,
+    )
+}
+
+@(test)
 managed_struct_results_move_through_ordinary_control_flow :: proc(t: ^testing.T) {
     source := `(package main)
 
@@ -182,7 +340,46 @@ consuming_overload_parameters_transfer_managed_arguments :: proc(t: ^testing.T) 
 }
 
 @(test)
-warn_discarded_inferred_owned_string_proc_result :: proc(t: ^testing.T) {
+consuming_named_parameters_transfer_managed_arguments :: proc(t: ^testing.T) {
+    source := `(package main)
+(import data "kvist:data")
+
+(defn consume [kind: int, value: Data] -> int
+  (data.release value)
+  kind)
+
+(defn use [] -> int
+  (consume :value (data.from-string "temporary") :kind 42))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "kvist_thread_"), true)
+    testing.expect_value(
+        t,
+        strings.contains(
+            output,
+            "return consume(kind = 42, value = kvist_thread_",
+        ),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(
+            output,
+            "data__from_string(\"temporary\")\n    defer",
+        ),
+        false,
+    )
+}
+
+@(test)
+delete_discarded_inferred_owned_string_proc_result :: proc(t: ^testing.T) {
     source := `(package main)
 (import strings "core:strings")
 
@@ -205,14 +402,12 @@ warn_discarded_inferred_owned_string_proc_result :: proc(t: ^testing.T) {
     defer kvist.compile_warning_slice_delete(result.warnings)
 
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from clone-owned is discarded; bind it, delete it, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
 
 @(test)
-warn_discarded_inferred_owned_string_proc_with_owned_early_return :: proc(t: ^testing.T) {
+delete_discarded_inferred_owned_string_proc_with_owned_early_return :: proc(t: ^testing.T) {
     source := `(package main)
 (import strings "core:strings")
 
@@ -236,14 +431,12 @@ warn_discarded_inferred_owned_string_proc_with_owned_early_return :: proc(t: ^te
     defer kvist.compile_warning_slice_delete(result.warnings)
 
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from lower-or-upper is discarded; bind it, delete it, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
 
 @(test)
-warn_discarded_third_party_inferred_owned_string_proc_result :: proc(t: ^testing.T) {
+delete_discarded_third_party_inferred_owned_string_proc_result :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-source-owned-string-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)
     if dir_err != nil {
@@ -319,14 +512,12 @@ warn_discarded_third_party_inferred_owned_string_proc_result :: proc(t: ^testing
     testing.expect_value(t, strings.contains(result.output, "support__join_two :: #force_inline proc(a, b: string) -> string {"), true)
     testing.expect_value(t, strings.contains(result.output, "out, err := strings.clone(strings.to_string(builder))"), true)
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.join-two is discarded; bind it, delete it, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
 
 @(test)
-warn_discarded_third_party_owned_string_wrapper_result :: proc(t: ^testing.T) {
+delete_discarded_third_party_owned_string_wrapper_result :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-source-owned-string-wrapper-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)
     if dir_err != nil {
@@ -399,10 +590,8 @@ warn_discarded_third_party_owned_string_wrapper_result :: proc(t: ^testing.T) {
     testing.expect_value(t, strings.contains(result.output, "support__clone_base :: #force_inline proc(s: string) -> string"), true)
     testing.expect_value(t, strings.contains(result.output, "support__clone_wrapper :: #force_inline proc(s: string) -> string"), true)
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.clone-wrapper is discarded; bind it, delete it, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
 
 @(test)
@@ -479,12 +668,12 @@ warn_discarded_third_party_named_return_assignment_owned_string :: proc(t: ^test
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
     testing.expect_value(t, len(result.warnings), 1)
     if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.lower-named is discarded; bind it, delete it, or return it")
+        testing.expect_value(t, result.warnings[0].message, "owned result from support.lower-named is discarded; bind it and clean it up, or return it")
     }
 }
 
 @(test)
-warn_discarded_third_party_conditional_assignment_owned_string :: proc(t: ^testing.T) {
+delete_discarded_third_party_conditional_assignment_owned_string :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-source-owned-branch-set-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)
     if dir_err != nil {
@@ -558,14 +747,12 @@ warn_discarded_third_party_conditional_assignment_owned_string :: proc(t: ^testi
     testing.expect_value(t, strings.contains(result.output, "out = strings.to_upper(s)"), true)
     testing.expect_value(t, strings.contains(result.output, "out = strings.to_lower(s)"), true)
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.normalize is discarded; bind it, delete it, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
 
 @(test)
-warn_discarded_third_party_type_case_assignment_owned_string :: proc(t: ^testing.T) {
+delete_discarded_third_party_type_case_assignment_owned_string :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-source-owned-type-case-set-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)
     if dir_err != nil {
@@ -653,10 +840,8 @@ warn_discarded_third_party_type_case_assignment_owned_string :: proc(t: ^testing
     testing.expect_value(t, strings.contains(result.output, "out = strings.to_upper(s)"), true)
     testing.expect_value(t, strings.contains(result.output, "out = strings.to_lower(s)"), true)
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.normalize-mode is discarded; bind it, delete it, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
 
 @(test)

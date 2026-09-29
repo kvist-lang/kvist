@@ -138,6 +138,22 @@ Macro_Lookup_Index :: struct {
 @(thread_local)
 active_macro_lookup_index: ^Macro_Lookup_Index
 
+@(thread_local)
+active_macro_call_span: Span
+
+@(thread_local)
+active_macro_call_span_set: bool
+
+macro_generated_span :: proc(template_span: Span) -> Span {
+    // Quasiquote-authored forms belong to the invocation, not the macro
+    // definition. Unquoted and spliced forms bypass this helper and retain
+    // their original caller spans.
+    if active_macro_call_span_set {
+        return active_macro_call_span
+    }
+    return template_span
+}
+
 find_user_macro :: proc(macros: []User_Macro, name: string) -> (User_Macro, bool) {
     index := active_macro_lookup_index
     if index != nil && len(index.macros) == len(macros) &&
@@ -167,7 +183,13 @@ invoke_user_macro_value :: proc(macro_decl: User_Macro, call: CST_Form, macros: 
     if !ok_bindings {
         return Macro_Value{}, err_bindings, false
     }
+    previous_call_span := active_macro_call_span
+    previous_call_span_set := active_macro_call_span_set
+    active_macro_call_span = call.span
+    active_macro_call_span_set = true
     value, err, ok := macro_eval_sequence(macro_decl.body[:], macros, bindings[:])
+    active_macro_call_span = previous_call_span
+    active_macro_call_span_set = previous_call_span_set
     if !ok {
         macro_binding_slice_delete_backing(&bindings)
         return Macro_Value{}, macro_error_with_expansion_context(macro_decl, err), false
@@ -400,7 +422,7 @@ macro_quasiquote_form :: proc(form: CST_Form, macros: []User_Macro, bindings: []
         if !ok_inner {
             return CST_Form{}, err_inner, false
         }
-        out := CST_Form{kind = .List, span = form.span}
+        out := CST_Form{kind = .List, span = macro_generated_span(form.span)}
         append(&out.items, clone_cst_form(form.items[0]))
         append(&out.items, inner)
         return out, Compile_Error{}, true
@@ -417,7 +439,7 @@ macro_quasiquote_form :: proc(form: CST_Form, macros: []User_Macro, bindings: []
         if !ok_inner {
             return CST_Form{}, err_inner, false
         }
-        out := CST_Form{kind = .List, span = form.span}
+        out := CST_Form{kind = .List, span = macro_generated_span(form.span)}
         append(&out.items, clone_cst_form(form.items[0]))
         append(&out.items, inner)
         return out, Compile_Error{}, true
@@ -433,13 +455,13 @@ macro_quasiquote_form :: proc(form: CST_Form, macros: []User_Macro, bindings: []
             if !ok_inner {
                 return CST_Form{}, err_inner, false
             }
-            out := CST_Form{kind = .List, span = form.span}
+            out := CST_Form{kind = .List, span = macro_generated_span(form.span)}
             append(&out.items, clone_cst_form(form.items[0]))
             append(&out.items, inner)
             return out, Compile_Error{}, true
         }
 
-        out := CST_Form{kind = .List, span = form.span}
+        out := CST_Form{kind = .List, span = macro_generated_span(form.span)}
         for item in form.items {
             if macro_is_symbol_call(item, "splice") && depth == 0 {
                 if len(item.items) != 2 {
@@ -469,7 +491,7 @@ macro_quasiquote_form :: proc(form: CST_Form, macros: []User_Macro, bindings: []
         }
         return out, Compile_Error{}, true
     case .Vector:
-        out := CST_Form{kind = .Vector, span = form.span}
+        out := CST_Form{kind = .Vector, span = macro_generated_span(form.span)}
         for item in form.items {
             if macro_is_symbol_call(item, "splice") && depth == 0 {
                 if len(item.items) != 2 {
@@ -499,7 +521,7 @@ macro_quasiquote_form :: proc(form: CST_Form, macros: []User_Macro, bindings: []
         }
         return out, Compile_Error{}, true
     case .Brace:
-        out := CST_Form{kind = .Brace, span = form.span}
+        out := CST_Form{kind = .Brace, span = macro_generated_span(form.span)}
         for item in form.items {
             if macro_is_symbol_call(item, "splice") && depth == 0 {
                 if len(item.items) != 2 {
@@ -529,7 +551,7 @@ macro_quasiquote_form :: proc(form: CST_Form, macros: []User_Macro, bindings: []
         }
         return out, Compile_Error{}, true
     case .Set:
-        out := CST_Form{kind = .Set, span = form.span}
+        out := CST_Form{kind = .Set, span = macro_generated_span(form.span)}
         for item in form.items {
             if macro_is_symbol_call(item, "splice") && depth == 0 {
                 if len(item.items) != 2 {
@@ -559,7 +581,9 @@ macro_quasiquote_form :: proc(form: CST_Form, macros: []User_Macro, bindings: []
         }
         return out, Compile_Error{}, true
     case:
-        return clone_cst_form(form), Compile_Error{}, true
+        out := clone_cst_form(form)
+        out.span = macro_generated_span(form.span)
+        return out, Compile_Error{}, true
     }
 }
 

@@ -100,21 +100,60 @@ format_compile_warning :: proc(path, source: string, warning: Compile_Warning) -
     if label == "" {
         label = "<source>"
     }
+    source_text := source
+    owned_source: []byte
+    defer if owned_source != nil {
+        delete(owned_source)
+    }
+    if warning.source_path != "" &&
+       (warning.source_path != path || source_text == "") {
+        imported_source, read_err := os.read_entire_file_from_path(
+            warning.source_path,
+            context.allocator,
+        )
+        if read_err == nil {
+            owned_source = imported_source
+            source_text = string(imported_source)
+        }
+    }
     message := warning.message
     if message == "" {
         message = "warning"
     }
+    inferred_line, inferred_column, line_start, line_end :=
+        source_position(source_text, warning.span.start)
     line := warning.line
     column := warning.column
     if line <= 0 || column <= 0 {
-        line, column, _, _ = source_position(source, warning.span.start)
+        line, column = inferred_line, inferred_column
     }
     code := compile_warning_code_text(warning.code)
     confidence := ""
     if warning.confidence == .Conservative {
         confidence = ", conservative"
     }
-    return strings.clone(fmt.tprintf("%s:%d:%d: warning[%s%s]: %s\n", label, line, column, code, confidence, message))
+    builder := strings.builder_make()
+    defer strings.builder_destroy(&builder)
+    fmt.sbprintf(
+        &builder,
+        "%s:%d:%d: warning[%s%s]: %s\n",
+        label,
+        line,
+        column,
+        code,
+        confidence,
+        message,
+    )
+    if source_text != "" && line_start <= line_end && line_end <= len(source_text) {
+        fmt.sbprintf(&builder, "  %s\n  ", source_text[line_start:line_end])
+        i := 1
+        for i < column {
+            strings.write_byte(&builder, ' ')
+            i += 1
+        }
+        strings.write_string(&builder, "^\n")
+    }
+    return strings.clone(strings.to_string(builder))
 }
 
 compile_warning_code_text :: proc(code: Compile_Warning_Code) -> string {
@@ -135,6 +174,8 @@ compile_warning_code_text :: proc(code: Compile_Warning_Code) -> string {
         return "KVO006"
     case .Ownership_Defer_In_Loop:
         return "KVO007"
+    case .Ownership_Automatic_Cleanup_Skipped:
+        return "KVO008"
     case .Repl_Unretained_Lifecycle:
         return "KVR001"
     }

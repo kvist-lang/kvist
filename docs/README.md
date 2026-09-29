@@ -7,6 +7,8 @@
 - [DATA-ORIENTED-PROGRAMMING.md](DATA-ORIENTED-PROGRAMMING.md) - choosing and
   programming with native values and Data
 - [sequences.md](sequences.md) - arrays, maps, sets, strings, SOA, and ownership
+- [ownership.md](ownership.md) - ownership IR, deterministic cleanup, and
+  deliberate analysis boundaries
 - [transforms.md](transforms.md) - fused collection transforms
 - [macros.md](macros.md) - macro authoring
 - [CONDITIONS.md](CONDITIONS.md) - conditions, handlers, and compiled restarts

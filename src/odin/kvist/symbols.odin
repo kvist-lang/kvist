@@ -447,7 +447,86 @@ symbols_write_union_variants :: proc(builder: ^strings.Builder, source, parent: 
     }
 }
 
-symbols_source :: proc(source: string) -> (output: string, err: Compile_Error, ok: bool) {
+symbols_append_analyzed_decls :: proc(
+    decls: ^[dynamic]IR_Decl,
+    forms: []CST_Top_Form,
+    fallback_path: string = "",
+) {
+    for top in forms {
+        decl, _, ok_decl := parse_decl(top)
+        if !ok_decl || decl.kind == .Ignored {
+            continue
+        }
+        decl.source_path = top.source_path
+        if decl.source_path == "" {
+            decl.source_path = fallback_path
+        }
+        decl.source_file = top.source_file
+        append(decls, IR_Decl(decl))
+    }
+}
+
+symbols_infer_lifetime_decls :: proc(decls: []IR_Decl) {
+    import_cache := Emitter_Import_Cache{}
+    emitter_import_cache_init(&import_cache)
+    defer emitter_import_cache_delete(&import_cache)
+    emitter := Emitter{
+        decls = decls[:],
+        import_cache = &import_cache,
+    }
+    for decl in decls {
+        if decl.kind == .Struct {
+            append(&emitter.structs, decl.struct_decl)
+        }
+        if decl.kind == .Union {
+            append(&emitter.unions, decl.union_decl)
+        }
+    }
+    infer_decoded_struct_lifetimes(&emitter)
+    infer_proc_lifetime_facts(&emitter)
+}
+
+symbols_analyzed_decls :: proc(
+    forms: []CST_Top_Form,
+    source_path: string = "",
+) -> [dynamic]IR_Decl {
+    decls: [dynamic]IR_Decl
+    symbols_append_analyzed_decls(&decls, forms, source_path)
+    symbols_infer_lifetime_decls(decls[:])
+    return decls
+}
+
+symbols_analyzed_package_decls :: proc(
+    files: []Package_File,
+) -> [dynamic]IR_Decl {
+    decls: [dynamic]IR_Decl
+    for file in files {
+        symbols_append_analyzed_decls(&decls, file.forms[:], file.path)
+    }
+    symbols_infer_lifetime_decls(decls[:])
+    return decls
+}
+
+symbols_analyzed_proc :: proc(
+    decls: []IR_Decl,
+    span: Span,
+    source_path: string = "",
+) -> (^Proc_Decl, bool) {
+    for &decl in decls {
+        if decl.kind == .Proc &&
+           decl.span.start == span.start &&
+           (source_path == "" || decl.source_path == source_path) {
+            return &decl.proc_decl, true
+        }
+    }
+    return nil, false
+}
+
+symbols_source :: proc(
+    source: string,
+    source_path: string = "",
+    shared_decls: []IR_Decl = nil,
+) -> (output: string, err: Compile_Error, ok: bool) {
     result_allocator := context.allocator
     old_allocator := context.allocator
     temp_scope := runtime.default_temp_allocator_temp_begin()
@@ -455,11 +534,18 @@ symbols_source :: proc(source: string) -> (output: string, err: Compile_Error, o
     context.allocator = context.temp_allocator
     defer context.allocator = old_allocator
 
-	forms, err_forms, ok_forms := read_kvist_top_forms(source)
+	forms, err_forms, ok_forms := read_kvist_top_forms(source, source_path)
     if !ok_forms {
         return "", clone_compile_error(err_forms, result_allocator), false
     }
     defer delete_borrowed_cst_top_form_slice(&forms)
+    local_decls: [dynamic]IR_Decl
+    analyzed_decls := shared_decls
+    if analyzed_decls == nil {
+        local_decls = symbols_analyzed_decls(forms[:], source_path)
+        analyzed_decls = local_decls[:]
+    }
+    defer delete(local_decls)
     builder := strings.builder_make()
     defer strings.builder_destroy(&builder)
     strings.write_string(&builder, "kind\tname\tline\tcolumn\tdetail\tsignature\tdoc\n")
@@ -601,7 +687,20 @@ symbols_source :: proc(source: string) -> (output: string, err: Compile_Error, o
                 proc_decl, err_proc, ok_proc := parse_proc_decl(proc_form)
                 if ok_proc {
                     signature = symbols_proc_signature(form.items[1].text, proc_decl)
-                    lifetime_detail = symbols_proc_lifetime_detail(&proc_decl)
+                    analyzed_proc, ok_analyzed_proc := symbols_analyzed_proc(
+                        analyzed_decls[:],
+                        form.span,
+                        source_path,
+                    )
+                    if ok_analyzed_proc {
+                        lifetime_detail = symbols_proc_lifetime_detail(
+                            analyzed_proc,
+                        )
+                    } else {
+                        lifetime_detail = symbols_proc_lifetime_detail(
+                            &proc_decl,
+                        )
+                    }
                 } else {
                     _ = err_proc
                 }

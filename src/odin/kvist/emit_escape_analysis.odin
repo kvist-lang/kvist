@@ -233,15 +233,23 @@ switch_may_escape_deferred_binding :: proc(e: ^Emitter, form: CST_Form, name: st
     return switch_may_escape_deferred_binding_names(e, form, names[:], returns)
 }
 
-form_returns_owned_managed_call_result :: proc(e: ^Emitter, form: CST_Form) -> bool {
+form_returns_independent_owned_call_result :: proc(e: ^Emitter, form: CST_Form) -> bool {
     if e == nil || form.kind != .List || len(form.items) == 0 || form.items[0].kind != .Symbol {
         return false
     }
     _, proc_decl, ok_proc := resolve_proc_call_decl(e, form.items[0].text)
-    if !ok_proc || proc_decl == nil || !proc_decl.owns_result {
+    if !ok_proc || proc_decl == nil {
         return false
     }
-    return proc_decl.returns.kind == .Single &&
+    contract := procedure_result_ownership_contract(proc_decl, e)
+    defer procedure_ownership_contract_delete(&contract)
+    if contract.result_flow != .Owned {
+        return false
+    }
+    if proc_decl.returns.kind != .Single {
+        return false
+    }
+    return strings.trim_space(proc_decl.returns.single_ty) == "string" ||
            type_text_has_managed_lifecycle(e, proc_decl.returns.single_ty)
 }
 
@@ -255,10 +263,11 @@ form_escape_deferred_binding_span_names :: proc(e: ^Emitter, form: CST_Form, nam
     if form_is_borrowed_view_of_tracked_name(form, names) {
         return {}, false
     }
-    // An owned managed result has its own retained reference. It remains valid
-    // after a resource passed to the call is cleaned up, so the resource does
-    // not escape through that result.
-    if form_returns_owned_managed_call_result(e, form) {
+    // An owned string has independent backing storage, while an owned managed
+    // result has its own retained or cloned value. Both remain valid after a
+    // resource passed to the call is cleaned up, so that resource does not
+    // escape through the result.
+    if form_returns_independent_owned_call_result(e, form) {
         return {}, false
     }
 
@@ -364,6 +373,252 @@ form_may_escape_deferred_binding :: proc(e: ^Emitter, form: CST_Form, name: stri
     return form_may_escape_deferred_binding_names(e, form, names[:], returns)
 }
 
+binding_names_remove :: proc(names: ^[dynamic]string, name: string) {
+    for i := len(names[:]) - 1; i >= 0; i -= 1 {
+        if names[i] == name {
+            ordered_remove(names, i)
+        }
+    }
+}
+
+form_value_carries_deferred_binding_names :: proc(e: ^Emitter, form: CST_Form, names: []string) -> bool {
+    if !form_mentions_any_binding_name(form, names) {
+        return false
+    }
+    #partial switch form.kind {
+    case .Symbol:
+        name := map_name(form.text)
+        defer delete(name)
+        return binding_names_contain(names, name)
+    case .Vector, .Brace, .Set:
+        for item in form.items {
+            if form_value_carries_deferred_binding_names(e, item, names) {
+                return true
+            }
+        }
+        return false
+    case .List:
+        if len(form.items) == 0 || form.items[0].kind != .Symbol {
+            return false
+        }
+        // A view carries a lifetime dependency, not ownership of its backing
+        // value. Borrow escape diagnostics handle that relation separately.
+        if form_is_inferred_borrowed_view_of_tracked_name(e, form, names) {
+            return false
+        }
+        head := form.items[0].text
+        switch head {
+        case "let":
+            if len(form.items) < 3 {
+                return false
+            }
+            bindings, _, ok_bind := parse_let_bindings(form.items[1])
+            if !ok_bind {
+                return false
+            }
+            defer delete(bindings)
+            scoped_names := make([dynamic]string, len(names))
+            defer delete(scoped_names)
+            copy(scoped_names[:], names)
+            for binding in bindings {
+                carries := form_value_carries_deferred_binding_names(e, binding.value, scoped_names[:])
+                if binding.name != "" {
+                    binding_names_remove(&scoped_names, binding.name)
+                    if carries {
+                        binding_names_append_unique(&scoped_names, binding.name)
+                    }
+                }
+            }
+            return len(form.items) > 2 &&
+                   form_value_carries_deferred_binding_names(e, form.items[len(form.items)-1], scoped_names[:])
+        case "do":
+            return len(form.items) > 1 &&
+                   form_value_carries_deferred_binding_names(e, form.items[len(form.items)-1], names)
+        case "if":
+            if len(form.items) >= 3 && form_value_carries_deferred_binding_names(e, form.items[2], names) {
+                return true
+            }
+            return len(form.items) >= 4 && form_value_carries_deferred_binding_names(e, form.items[3], names)
+        case "return":
+            for item in form.items[1:] {
+                if form_value_carries_deferred_binding_names(e, item, names) {
+                    return true
+                }
+            }
+            return false
+        case "quote", "quasiquote", "fn":
+            return false
+        }
+        if form_is_struct_or_union_constructor(e, form) {
+            for item in form.items[1:] {
+                if form_value_carries_deferred_binding_names(e, item, names) {
+                    return true
+                }
+            }
+            return false
+        }
+        for item, item_index in form.items[1:] {
+            if call_arg_transfers_owned_result(e, form, item_index+1) &&
+               form_value_carries_deferred_binding_names(e, item, names) {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+form_deferred_transfer_span_names :: proc(e: ^Emitter, form: CST_Form, names: []string) -> (Span, bool) {
+    if !form_mentions_any_binding_name(form, names) {
+        return {}, false
+    }
+    if form.kind != .List || len(form.items) == 0 || form.items[0].kind != .Symbol {
+        #partial switch form.kind {
+        case .List, .Vector, .Brace, .Set:
+            for item in form.items {
+                if span, ok := form_deferred_transfer_span_names(e, item, names); ok {
+                    return span, true
+                }
+            }
+        }
+        return {}, false
+    }
+
+    head := form.items[0].text
+    switch head {
+    case "quote", "quasiquote", "fn":
+        return {}, false
+    case "delete":
+        for item in form.items[1:] {
+            if form_value_carries_deferred_binding_names(e, item, names) {
+                return item.span, true
+            }
+        }
+        return {}, false
+    case "return":
+        for item in form.items[1:] {
+            if form_value_carries_deferred_binding_names(e, item, names) {
+                return item.span, true
+            }
+            if span, ok := form_deferred_transfer_span_names(e, item, names); ok {
+                return span, true
+            }
+        }
+        return {}, false
+    case "set!":
+        if len(form.items) == 3 {
+            if span, ok := form_deferred_transfer_span_names(e, form.items[2], names); ok {
+                return span, true
+            }
+            if form_value_carries_deferred_binding_names(e, form.items[2], names) {
+                return form.items[2].span, true
+            }
+        }
+        return {}, false
+    case "let":
+        if len(form.items) < 3 {
+            return {}, false
+        }
+        bindings, _, ok_bind := parse_let_bindings(form.items[1])
+        if !ok_bind {
+            return {}, false
+        }
+        defer delete(bindings)
+        scoped_names := make([dynamic]string, len(names))
+        defer delete(scoped_names)
+        copy(scoped_names[:], names)
+        for binding in bindings {
+            if span, ok := form_deferred_transfer_span_names(e, binding.value, scoped_names[:]); ok {
+                return span, true
+            }
+            carries := form_value_carries_deferred_binding_names(e, binding.value, scoped_names[:])
+            if binding.name != "" {
+                binding_names_remove(&scoped_names, binding.name)
+                if carries {
+                    binding_names_append_unique(&scoped_names, binding.name)
+                }
+            }
+        }
+        for item in form.items[2:] {
+            if span, ok := form_deferred_transfer_span_names(e, item, scoped_names[:]); ok {
+                return span, true
+            }
+        }
+        return {}, false
+    }
+
+    for item, item_index in form.items[1:] {
+        consumes_arg := (form_transfers_owned_args(form) && item_index+1 >= 2) ||
+                        call_arg_targets_owned_param(e, form, item_index+1)
+        if consumes_arg && form_value_carries_deferred_binding_names(e, item, names) {
+            return item.span, true
+        }
+        if span, ok := form_deferred_transfer_span_names(e, item, names); ok {
+            return span, true
+        }
+    }
+    return {}, false
+}
+
+let_defer_transfer_error :: proc(e: ^Emitter, bindings: []Binding, body: []CST_Form) -> (Compile_Error, bool) {
+    for binding, binding_index in bindings {
+        if !binding.deferred_delete && !binding.defer_with_cleanup {
+            continue
+        }
+        delete_name, ok_delete_name := binding_delete_target_name(binding)
+        if !ok_delete_name {
+            continue
+        }
+        names: [dynamic]string
+        defer delete(names)
+        append(&names, delete_name)
+        conflict_span := Span{}
+        conflict := false
+        for alias_binding in bindings[binding_index+1:] {
+            if span, ok := form_deferred_transfer_span_names(e, alias_binding.value, names[:]); ok {
+                conflict_span = span
+                conflict = true
+                break
+            }
+            carries := form_value_carries_deferred_binding_names(e, alias_binding.value, names[:])
+            if alias_binding.name != "" {
+                binding_names_remove(&names, alias_binding.name)
+                if carries {
+                    binding_names_append_unique(&names, alias_binding.name)
+                }
+            }
+        }
+        if !conflict {
+            for item in body {
+                if span, ok := form_deferred_transfer_span_names(e, item, names[:]); ok {
+                    conflict_span = span
+                    conflict = true
+                    break
+                }
+            }
+        }
+        if !conflict {
+            continue
+        }
+        marker := ":defer"
+        if binding.defer_with_cleanup {
+            marker = ":defer-with"
+            if binding.cleanup.kind == .Symbol {
+                marker = fmt.tprintf(":defer-with %s", binding.cleanup.text)
+            }
+        }
+        return Compile_Error{
+            message = fmt.tprintf(
+                "`%s` has `%s` cleanup, but ownership is transferred before scope exit; remove `%s` to transfer ownership, or pass an owned copy",
+                delete_name,
+                marker,
+                marker,
+            ),
+            span = conflict_span,
+        }, true
+    }
+    return {}, false
+}
+
 body_escape_owned_temp_result_span_names :: proc(e: ^Emitter, forms: []CST_Form, names: []string, returns: Return_Spec) -> (Span, bool) {
     scoped_names := make([dynamic]string, len(names))
     defer delete(scoped_names)
@@ -418,16 +673,35 @@ switch_may_escape_owned_temp_result :: proc(e: ^Emitter, form: CST_Form, returns
     return switch_may_escape_owned_temp_result_names(e, form, nil, returns)
 }
 
-form_is_borrowed_view_of_tracked_name :: proc(form: CST_Form, names: []string) -> bool {
-    if form.kind != .List || len(form.items) < 2 || form.items[0].kind != .Symbol {
-        return false
-    }
-    head := form.items[0].text
-    if head != "odin-slice" {
+form_is_borrowed_view_of_tracked_name :: proc(
+    form: CST_Form,
+    names: []string,
+) -> bool {
+    if form.kind != .List || len(form.items) < 2 ||
+       form.items[0].kind != .Symbol ||
+       form.items[0].text != "odin-slice" {
         return false
     }
     source := form.items[1]
-    return source.kind == .Symbol && binding_names_contain(names, map_name(source.text))
+    if source.kind != .Symbol {
+        return false
+    }
+    source_name := map_name(source.text)
+    defer delete(source_name)
+    return binding_names_contain(names, source_name)
+}
+
+form_is_inferred_borrowed_view_of_tracked_name :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    names: []string,
+) -> bool {
+    owner_name, found := form_direct_borrow_owner_name(form, e)
+    if !found {
+        return false
+    }
+    defer delete(owner_name)
+    return binding_names_contain(names, owner_name)
 }
 
 binding_declared_names_append :: proc(binding: Binding, names: ^[dynamic]string) {

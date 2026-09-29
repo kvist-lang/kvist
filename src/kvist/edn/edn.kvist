@@ -241,7 +241,6 @@
   (let [[bytes file-error] (os.read_entire_file path context.allocator)]
     (if (!= file-error nil)
       (return 'nil (Read-Error :message "could not read EDN file") false))
-    (defer (delete bytes))
     (try-read (string bytes))))
 
 (defn read-file
