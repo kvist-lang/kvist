@@ -610,14 +610,24 @@ ownership_ir_lower_binding :: proc(
 ) {
     // Binding values are evaluated before the new name enters scope. Lower
     // their ownership events against the already-active places.
-    ownership_ir_lower_call(
-        lowering,
-        binding.value,
-        block,
-        binding,
-        scope_places,
-        body,
-    )
+    if binding.value.kind == .List && len(binding.value.items) >= 3 &&
+       binding.value.items[0].kind == .Symbol &&
+       binding.value.items[0].text == "if" {
+        ownership_ir_lower_value_uses(
+            lowering,
+            binding.value,
+            block,
+        )
+    } else {
+        ownership_ir_lower_call(
+            lowering,
+            binding.value,
+            block,
+            binding,
+            scope_places,
+            body,
+        )
+    }
     if proc_call_owned_result_fields_are_uncertain(
         lowering.emitter,
         binding.value,
@@ -1452,12 +1462,54 @@ ownership_ir_lower_value_uses :: proc(
         return
     }
     if form.kind == .List {
+        if len(form.items) >= 3 && form.items[0].kind == .Symbol &&
+           form.items[0].text == "if" {
+            ownership_ir_lower_value_uses(
+                lowering,
+                form.items[1],
+                block,
+            )
+            for branch in form.items[2:] {
+                if !ownership_ir_form_never_returns(
+                    lowering.emitter,
+                    branch,
+                ) {
+                    ownership_ir_lower_value_uses(
+                        lowering,
+                        branch,
+                        block,
+                    )
+                }
+            }
+            return
+        }
         ownership_ir_lower_call(lowering, form, block)
         return
     }
     for item in form.items {
         ownership_ir_lower_value_uses(lowering, item, block)
     }
+}
+
+ownership_ir_deferred_cleanup_arg_place :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    form: CST_Form,
+) -> (int, bool) {
+    if form.kind == .Symbol {
+        return ownership_ir_lookup_name(lowering, form.text)
+    }
+    if form.kind != .List || len(form.items) != 2 ||
+       form.items[0].kind != .Symbol {
+        return -1, false
+    }
+    head := form.items[0].text
+    if head != "addr" && head != "deref" {
+        return -1, false
+    }
+    return ownership_ir_deferred_cleanup_arg_place(
+        lowering,
+        form.items[1],
+    )
 }
 
 ownership_ir_schedule_deferred_form :: proc(
@@ -1498,17 +1550,18 @@ ownership_ir_schedule_deferred_form :: proc(
     head := map_name(raw_head)
     defer delete(head)
     for item in form.items[1:] {
-        if item.kind != .Symbol {
-            continue
-        }
-        place, found := ownership_ir_lookup_name(lowering, item.text)
+        place, found := ownership_ir_deferred_cleanup_arg_place(
+            lowering,
+            item,
+        )
         if !found {
             continue
         }
         for shadow_place in lowering.result.places {
             if shadow_place.place != place ||
                (shadow_place.cleanup_head != head &&
-                !(shadow_place.diagnose_unreleased &&
+                !((shadow_place.cleanup_head != "" ||
+                   shadow_place.diagnose_unreleased) &&
                   (head == "delete" || cleanup_call_head(head)))) {
                 continue
             }
@@ -1830,6 +1883,56 @@ ownership_ir_lower_borrow_escapes :: proc(
     for arg in args {
         ownership_ir_lower_borrow_escapes(lowering, arg, block)
     }
+}
+
+ownership_ir_form_never_returns :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    depth := 0,
+) -> bool {
+    if e == nil || depth > 16 || form.kind != .List ||
+       len(form.items) == 0 || form.items[0].kind != .Symbol {
+        return false
+    }
+    head := form.items[0].text
+    switch head {
+    case "do", "block":
+        for item in form.items[1:] {
+            if ownership_ir_form_never_returns(e, item, depth+1) {
+                return true
+            }
+        }
+        return false
+    case "let":
+        if len(form.items) < 3 {
+            return false
+        }
+        for item in form.items[2:] {
+            if ownership_ir_form_never_returns(e, item, depth+1) {
+                return true
+            }
+        }
+        return false
+    case "if":
+        return len(form.items) >= 4 &&
+               ownership_ir_form_never_returns(e, form.items[2], depth+1) &&
+               ownership_ir_form_never_returns(e, form.items[3], depth+1)
+    }
+    if imported_interop_call_matches(e, head, "core:os", "exit") {
+        return true
+    }
+    mapped_head := map_name(head)
+    defer delete(mapped_head)
+    proc_decl, found := find_proc_decl(e, mapped_head)
+    if !found || len(proc_decl.body) == 0 {
+        return false
+    }
+    for item in proc_decl.body {
+        if ownership_ir_form_never_returns(e, item, depth+1) {
+            return true
+        }
+    }
+    return false
 }
 
 ownership_ir_lower_form :: proc(
@@ -2155,6 +2258,15 @@ ownership_ir_lower_form :: proc(
         return ownership_ir_flow_single(block)
     }
     ownership_ir_lower_call(lowering, form, block)
+    if ownership_ir_form_never_returns(lowering.emitter, form) {
+        return ownership_ir_flow_single(
+            block,
+            .Return,
+            form.span,
+            form,
+            .Synthetic,
+        )
+    }
     if can_transfer {
         ownership_ir_lower_borrow_escapes(lowering, form, block)
     }

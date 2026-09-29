@@ -520,6 +520,81 @@ ownership_ir_value_liveness_keeps_scheduled_cleanup_usable :: proc(
 }
 
 @(test)
+ownership_ir_scheduled_cleanup_covers_later_reassignment :: proc(t: ^testing.T) {
+    graph := kvist.Ownership_IR_Proc{
+        place_count = 1,
+        entry = 0,
+    }
+    defer kvist.ownership_ir_proc_delete(&graph)
+    block := kvist.ownership_ir_add_block(&graph)
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Acquire, place = 0},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Schedule_Destroy, place = 0},
+    )
+    kvist.ownership_ir_add_event(
+        &graph,
+        block,
+        {kind = .Reassign, place = 0},
+    )
+
+    cleanup := kvist.ownership_ir_analyze(graph)
+    defer kvist.ownership_ir_analysis_delete(&cleanup)
+    values := kvist.ownership_ir_analyze_value_liveness(graph)
+    defer kvist.ownership_ir_analysis_delete(&values)
+
+    testing.expect_value(
+        t,
+        kvist.ownership_ir_cleanup_need(cleanup.blocks[block].exit[0]),
+        kvist.Ownership_IR_Cleanup_Need.None,
+    )
+    testing.expect_value(t, values.blocks[block].exit[0].may_live, true)
+    testing.expect_value(t, values.blocks[block].exit[0].must_live, true)
+}
+
+@(test)
+ownership_analysis_recognizes_nonreturning_wrapper_control_flow :: proc(
+    t: ^testing.T,
+) {
+    source := `(package main)
+(import data "kvist:data")
+(import os "core:os")
+
+(defn stop! []
+  (os.exit 1))
+
+(defn use [stop?: bool] -> int
+  (let [value: Data []]
+    (defer (data.release value))
+    (let [flag
+            (if stop?
+              (do
+                (data.release value)
+                (stop!)
+                false)
+              true)]
+      (discard flag))
+    (data.count value)))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+}
+
+@(test)
 ownership_ir_diagnoses_discarded_but_not_destroyed_transients :: proc(
     t: ^testing.T,
 ) {

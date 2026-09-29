@@ -1467,6 +1467,136 @@ compile_recognizes_explicit_custom_deferred_cleanup :: proc(t: ^testing.T) {
 }
 
 @(test)
+explicit_deferred_cleanup_through_address_suppresses_managed_cleanup :: proc(
+    t: ^testing.T,
+) {
+    source := `(package main)
+(import data "kvist:data")
+
+(defstruct Plan [
+  payload: Data
+])
+
+(defn make-plan [] -> Plan
+  (Plan :payload {:answer 42}))
+
+(defn destroy-plan! [value: ^Plan]
+  (data.release value^.payload))
+
+(defn use [] -> int
+  (let [plan (make-plan)]
+    (defer (destroy-plan! (addr plan)))
+    (data.count plan.payload)))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "defer destroy_plan_bang(&plan)"),
+        1,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "defer (proc(kvist_place: ^Plan, kvist_owner: ^bool)",
+        ),
+        false,
+    )
+}
+
+@(test)
+explicit_deferred_release_alias_suppresses_result_cleanup :: proc(t: ^testing.T) {
+    source := `(package main)
+(import data "kvist:data")
+
+(defn acquire [] -> [value: Data, ok: bool]
+  (return {:answer 42} true))
+
+(defn release-value! [value: Data]
+  (data.release value))
+
+(defn use [] -> int
+  (let [[value ok] (acquire)]
+    (defer (release-value! value))
+    (if ok (data.count value) 0)))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "defer release_value_bang(value)"),
+        1,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "use :: proc() -> int {\n    value, ok := acquire()\n    defer kvist_data_release(value)",
+        ),
+        false,
+    )
+}
+
+@(test)
+explicit_deferred_release_covers_managed_reassignment :: proc(t: ^testing.T) {
+    source := `(package main)
+(import data "kvist:data")
+
+(defn release-value! [value: Data]
+  (data.release value))
+
+(defn use [] -> int
+  (let [value: Data []]
+    (defer (release-value! value))
+    (set! value {:answer 42})
+    (data.count value)))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "defer release_value_bang(value)"),
+        1,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "value: Data = kvist_data_make_items(Data_Kind.Vector, []Data{})\n    defer release_value_bang(value)",
+        ),
+        true,
+    )
+}
+
+@(test)
 managed_cleanup_reads_the_final_value_after_reassignment :: proc(t: ^testing.T) {
     source := `(package main)
 (import data "kvist:data")

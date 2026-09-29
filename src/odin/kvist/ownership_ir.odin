@@ -64,12 +64,15 @@ Ownership_IR_Proc :: struct {
     blocks:      [dynamic]Ownership_IR_Block,
 }
 
-// may_live answers whether at least one incoming path owns the place;
-// must_live answers whether every incoming path owns it. The pair forms a
-// small finite lattice suitable for fixed-point propagation through loops.
+// may_live answers whether at least one incoming path has an uncovered
+// ownership obligation; must_live answers whether every incoming path does.
+// The scheduled flags remember a deferred cleanup separately from the current
+// value, so a later reassignment remains covered by the same scope defer.
 Ownership_IR_Live_Fact :: struct {
-    may_live:  bool,
-    must_live: bool,
+    may_live:               bool,
+    must_live:              bool,
+    may_cleanup_scheduled:  bool,
+    must_cleanup_scheduled: bool,
 }
 
 Ownership_IR_Block_Facts :: struct {
@@ -290,6 +293,12 @@ ownership_ir_join_facts :: proc(
         joined := Ownership_IR_Live_Fact{
             may_live = target[index].may_live || fact.may_live,
             must_live = target[index].must_live && fact.must_live,
+            may_cleanup_scheduled =
+                target[index].may_cleanup_scheduled ||
+                fact.may_cleanup_scheduled,
+            must_cleanup_scheduled =
+                target[index].must_cleanup_scheduled &&
+                fact.must_cleanup_scheduled,
         }
         if joined != target[index] {
             target[index] = joined
@@ -335,33 +344,74 @@ ownership_ir_apply_event :: proc(
     }
     #partial switch event.kind {
     case .Acquire, .Reassign:
-        facts[event.place] = {
-            may_live = true,
+        if value_liveness {
+            facts[event.place].may_live = true
             // Conditional acquisition affects cleanup responsibility, not
             // whether the local may subsequently be referenced.
-            must_live = true if value_liveness else !event.conditional,
+            facts[event.place].must_live = true
+        } else {
+            facts[event.place].may_live =
+                !facts[event.place].must_cleanup_scheduled
+            facts[event.place].must_live =
+                !event.conditional &&
+                !facts[event.place].may_cleanup_scheduled
         }
     case .Copy:
-        facts[event.target] = facts[event.place]
+        if value_liveness {
+            facts[event.target] = facts[event.place]
+        } else {
+            facts[event.target].may_live =
+                facts[event.place].may_live &&
+                !facts[event.target].must_cleanup_scheduled
+            facts[event.target].must_live =
+                facts[event.place].must_live &&
+                !facts[event.target].may_cleanup_scheduled
+        }
     case .Move:
-        facts[event.target] = facts[event.place]
-        facts[event.place] = {}
+        if value_liveness {
+            facts[event.target] = facts[event.place]
+            facts[event.place] = {}
+        } else {
+            facts[event.target].may_live =
+                facts[event.place].may_live &&
+                !facts[event.target].must_cleanup_scheduled
+            facts[event.target].must_live =
+                facts[event.place].must_live &&
+                !facts[event.target].may_cleanup_scheduled
+            facts[event.place].may_live = false
+            facts[event.place].must_live = false
+        }
     case .Store:
         if event.target >= 0 {
-            facts[event.target] = facts[event.place]
+            if value_liveness {
+                facts[event.target] = facts[event.place]
+            } else {
+                facts[event.target].may_live =
+                    facts[event.place].may_live &&
+                    !facts[event.target].must_cleanup_scheduled
+                facts[event.target].must_live =
+                    facts[event.place].must_live &&
+                    !facts[event.target].may_cleanup_scheduled
+            }
         }
-        facts[event.place] = {}
+        facts[event.place].may_live = false
+        facts[event.place].must_live = false
     case .Schedule_Destroy:
         if value_liveness {
             // A defer schedules future destruction but leaves the value usable
             // until its scope actually exits.
         } else if event.conditional {
+            facts[event.place].may_cleanup_scheduled = true
             facts[event.place].must_live = false
         } else {
-            facts[event.place] = {}
+            facts[event.place].may_cleanup_scheduled = true
+            facts[event.place].must_cleanup_scheduled = true
+            facts[event.place].may_live = false
+            facts[event.place].must_live = false
         }
     case .Destroy, .Transfer, .Return, .Discard:
-        facts[event.place] = {}
+        facts[event.place].may_live = false
+        facts[event.place].must_live = false
     case .Borrow, .Call, .Borrow_Assign, .Borrow_Copy, .Borrow_Clear,
          .Borrow_Use, .Borrow_Escape, .Borrow_Delete, .Borrow_Owner_Exit:
         // These operations do not change ownership. The verifier later uses

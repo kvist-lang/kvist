@@ -1156,7 +1156,9 @@ emit_managed_destructure_cleanup :: proc(
         return
     }
     for name, idx in binding.pattern {
-        if name != "" && type_text_has_managed_lifecycle(e, proc_decl.returns.named[idx].ty) {
+        if name != "" &&
+           type_text_has_managed_lifecycle(e, proc_decl.returns.named[idx].ty) &&
+           !body_deletes_name(body, name) {
             emit_line(e, fmt.tprintf(
                 "defer %s",
                 managed_destroy_value_text(e, proc_decl.returns.named[idx].ty, name),
