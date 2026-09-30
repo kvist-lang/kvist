@@ -1016,7 +1016,212 @@ aggregate_result_value_is_owned :: proc(
         defer delete(name)
         return string_slice_contains_name(owned_names, name)
     }
+    if form.kind == .List && len(form.items) > 0 &&
+       form.items[0].kind == .Symbol {
+        head := form.items[0].text
+        if head == "if" && len(form.items) == 4 {
+            return aggregate_result_value_is_owned(
+                       e,
+                       form.items[2],
+                       owned_names,
+                   ) &&
+                   aggregate_result_value_is_owned(
+                       e,
+                       form.items[3],
+                       owned_names,
+                   )
+        }
+        if (head == "do" || head == "block") && len(form.items) >= 2 {
+            return aggregate_result_value_is_owned(
+                e,
+                form.items[len(form.items)-1],
+                owned_names,
+            )
+        }
+    }
     return form_produces_owned_value(form, e)
+}
+
+ownership_type_contains_automatic_native_delete :: proc(
+    e: ^Emitter,
+    ty: string,
+    depth := 0,
+) -> bool {
+    if type_supports_automatic_native_delete(ty) {
+        return true
+    }
+    if depth > 16 {
+        return false
+    }
+    struct_decl, ok_struct := find_struct_decl(e, strings.trim_space(ty))
+    if !ok_struct || type_text_has_managed_lifecycle(e, struct_decl.name) {
+        return false
+    }
+    for field in struct_decl.fields {
+        if ownership_type_contains_automatic_native_delete(
+            e,
+            field.ty,
+            depth+1,
+        ) {
+            return true
+        }
+    }
+    return false
+}
+
+aggregate_result_value_contains_owned_for_type :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    ty: string,
+    owned_names: []string,
+    depth := 0,
+) -> bool {
+    if depth > 16 {
+        return false
+    }
+    if type_supports_automatic_native_delete(ty) {
+        return aggregate_result_value_is_owned(e, form, owned_names)
+    }
+    struct_decl, ok_struct := find_struct_decl(e, strings.trim_space(ty))
+    if !ok_struct || form.kind != .List || len(form.items) == 0 ||
+       form.items[0].kind != .Symbol {
+        return false
+    }
+    head := map_name(form.items[0].text)
+    defer delete(head)
+    if head != struct_decl.name {
+        return false
+    }
+    for item, item_index in form.items[1:] {
+        field, ok_field := ownership_ir_struct_field_for_call_arg(
+            e,
+            form,
+            item_index+1,
+        )
+        if !ok_field {
+            continue
+        }
+        if aggregate_result_value_contains_owned_for_type(
+            e,
+            item,
+            field.ty,
+            owned_names,
+            depth+1,
+        ) {
+            return true
+        }
+    }
+    return false
+}
+
+aggregate_result_value_ownership_is_uncertain :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    ty: string,
+    owned_names: []string,
+    depth := 0,
+) -> bool {
+    if depth > 16 {
+        return true
+    }
+    if type_supports_automatic_native_delete(ty) {
+        if form.kind != .List || len(form.items) == 0 ||
+           form.items[0].kind != .Symbol {
+            return false
+        }
+        head := form.items[0].text
+        if head == "if" && len(form.items) == 4 {
+            then_owned := aggregate_result_value_is_owned(
+                e,
+                form.items[2],
+                owned_names,
+            )
+            else_owned := aggregate_result_value_is_owned(
+                e,
+                form.items[3],
+                owned_names,
+            )
+            return then_owned != else_owned ||
+                   aggregate_result_value_ownership_is_uncertain(
+                       e,
+                       form.items[2],
+                       ty,
+                       owned_names,
+                       depth+1,
+                   ) ||
+                   aggregate_result_value_ownership_is_uncertain(
+                       e,
+                       form.items[3],
+                       ty,
+                       owned_names,
+                       depth+1,
+                   )
+        }
+        if (head == "do" || head == "block") && len(form.items) >= 2 {
+            return aggregate_result_value_ownership_is_uncertain(
+                e,
+                form.items[len(form.items)-1],
+                ty,
+                owned_names,
+                depth+1,
+            )
+        }
+        return false
+    }
+    struct_decl, ok_struct := find_struct_decl(e, strings.trim_space(ty))
+    if !ok_struct || form.kind != .List || len(form.items) == 0 ||
+       form.items[0].kind != .Symbol {
+        return false
+    }
+    head := map_name(form.items[0].text)
+    defer delete(head)
+    if head != struct_decl.name {
+        return false
+    }
+    relevant_fields := 0
+    for field in struct_decl.fields {
+        if ownership_type_contains_automatic_native_delete(e, field.ty) {
+            relevant_fields += 1
+        }
+    }
+    seen_relevant_fields := 0
+    any_owned := false
+    any_borrowed := false
+    for item, item_index in form.items[1:] {
+        field, ok_field := ownership_ir_struct_field_for_call_arg(
+            e,
+            form,
+            item_index+1,
+        )
+        if !ok_field ||
+           !ownership_type_contains_automatic_native_delete(
+               e,
+               field.ty,
+           ) {
+            continue
+        }
+        seen_relevant_fields += 1
+        if aggregate_result_value_ownership_is_uncertain(
+            e,
+            item,
+            field.ty,
+            owned_names,
+            depth+1,
+        ) {
+            return true
+        }
+        child_owned := aggregate_result_value_contains_owned_for_type(
+            e,
+            item,
+            field.ty,
+            owned_names,
+            depth+1,
+        )
+        any_owned = any_owned || child_owned
+        any_borrowed = any_borrowed || !child_owned
+    }
+    any_borrowed = any_borrowed || seen_relevant_fields < relevant_fields
+    return any_owned && any_borrowed
 }
 
 form_contains_explicit_return :: proc(form: CST_Form, depth: int = 0) -> bool {
@@ -1439,15 +1644,29 @@ aggregate_result_owned_fields :: proc(
     defer delete(mapped_head)
     if mapped_head == return_struct.name {
         for item, item_index in form.items[1:] {
-            if !aggregate_result_value_is_owned(e, item, owned_names) {
-                continue
-            }
             field, ok_field := ownership_ir_struct_field_for_call_arg(
                 e,
                 form,
                 item_index+1,
             )
-            if !ok_field || !type_supports_automatic_native_delete(field.ty) {
+            if !ok_field {
+                continue
+            }
+            if aggregate_result_value_ownership_is_uncertain(
+                   e,
+                   item,
+                   field.ty,
+                   owned_names,
+               ) {
+                uncertain^ = true
+                return fields, false
+            }
+            if !aggregate_result_value_contains_owned_for_type(
+                   e,
+                   item,
+                   field.ty,
+                   owned_names,
+               ) {
                 continue
             }
             for candidate, field_index in return_struct.fields {
@@ -1487,7 +1706,7 @@ proc_decl_infer_owned_result_fields :: proc(
     }
     has_ownership_relevant_field := false
     for field in return_struct.fields {
-        if type_supports_automatic_native_delete(field.ty) {
+        if ownership_type_contains_automatic_native_delete(e, field.ty) {
             has_ownership_relevant_field = true
             break
         }

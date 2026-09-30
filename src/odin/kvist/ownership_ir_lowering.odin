@@ -259,19 +259,50 @@ ownership_ir_schedule_binding_cleanup :: proc(
         return
     }
     place, found := ownership_ir_lookup_name(lowering, cleanup_name)
-    if !found {
-        return
+    if found {
+        _ = ownership_ir_add_event(
+            &lowering.result.graph,
+            block,
+            {
+                kind = .Schedule_Destroy,
+                place = place,
+                conditional = binding.err_deferred_delete,
+                span = binding.target_span,
+            },
+        )
     }
-    _ = ownership_ir_add_event(
-        &lowering.result.graph,
-        block,
-        {
-            kind = .Schedule_Destroy,
-            place = place,
-            conditional = binding.err_deferred_delete,
-            span = binding.target_span,
-        },
-    )
+
+    // Aggregate aliases have no root place of their own: their dotted names
+    // point at the original field places. An explicit cleanup on the alias is
+    // therefore the cleanup for those places and must suppress cleanup on the
+    // source aggregate.
+    prefix := fmt.tprintf("%s.", cleanup_name)
+    defer delete(prefix)
+    scheduled: [dynamic]int
+    defer delete(scheduled)
+    for name_binding in lowering.names {
+        if !strings.has_prefix(name_binding.name, prefix) ||
+           ownership_ir_int_slice_contains(scheduled[:], name_binding.place) {
+            continue
+        }
+        for &shadow_place in lowering.result.places {
+            if shadow_place.place == name_binding.place {
+                shadow_place.cleanup_scheduled = true
+                break
+            }
+        }
+        _ = ownership_ir_add_event(
+            &lowering.result.graph,
+            block,
+            {
+                kind = .Schedule_Destroy,
+                place = name_binding.place,
+                conditional = binding.err_deferred_delete,
+                span = binding.target_span,
+            },
+        )
+        append(&scheduled, name_binding.place)
+    }
 }
 
 ownership_ir_legacy_cleanup_need :: proc(
@@ -640,7 +671,7 @@ ownership_ir_lower_binding :: proc(
             lowering.emitter,
             binding.value,
         )
-        defer delete(returned_fields)
+        defer delete_struct_field_slice(&returned_fields)
         for field in returned_fields {
             if place, added := ownership_ir_add_struct_field_place(
                 lowering,
@@ -778,6 +809,13 @@ ownership_ir_lower_binding :: proc(
             lowering.emitter,
             binding,
         )
+        binding_ty, has_binding_ty := obvious_binding_type(
+            lowering.emitter,
+            binding,
+        )
+        if has_binding_ty {
+            defer delete(binding_ty)
+        }
         if binding_value_produces_owned_value(binding, lowering.emitter) ||
            automatic_cleanup != .None || binding.deferred_delete ||
            binding.err_deferred_delete || binding.defer_with_cleanup {
@@ -790,6 +828,7 @@ ownership_ir_lower_binding :: proc(
                 .None,
                 false,
                 binding.target_span,
+                ty = binding_ty if has_binding_ty else "",
                 cleanup_scheduled = binding.deferred_delete ||
                                     binding.err_deferred_delete ||
                                     binding.defer_with_cleanup,
@@ -807,8 +846,8 @@ ownership_ir_lower_binding :: proc(
                     span = binding.value.span,
                 },
             )
-            ownership_ir_schedule_binding_cleanup(lowering, binding, current_block)
         }
+        ownership_ir_schedule_binding_cleanup(lowering, binding, current_block)
         borrow_place := ownership_ir_add_borrow_place(
             lowering,
             binding.name,
@@ -999,7 +1038,22 @@ proc_call_owned_result_fields :: proc(
        form.items[0].kind != .Symbol {
         return fields
     }
-    _, proc_decl, ok_proc := resolve_proc_call_decl(e, form.items[0].text)
+    head := form.items[0].text
+    if head == "if" && len(form.items) == 4 {
+        then_fields := proc_call_owned_result_fields(e, form.items[2])
+        defer delete_struct_field_slice(&then_fields)
+        else_fields := proc_call_owned_result_fields(e, form.items[3])
+        defer delete_struct_field_slice(&else_fields)
+        if !ownership_ir_struct_fields_match(then_fields[:], else_fields[:]) {
+            return fields
+        }
+        fields = clone_struct_field_slice(then_fields[:])
+        return fields
+    }
+    if head == "do" && len(form.items) >= 2 {
+        return proc_call_owned_result_fields(e, form.items[len(form.items)-1])
+    }
+    _, proc_decl, ok_proc := resolve_proc_call_decl(e, head)
     if !ok_proc || proc_decl == nil {
         return fields
     }
@@ -1014,10 +1068,72 @@ proc_call_owned_result_fields :: proc(
     }
     for field_index in contract.owned_result_fields {
         if field_index >= 0 && field_index < len(return_struct.fields) {
-            append(&fields, return_struct.fields[field_index])
+            ownership_ir_append_owned_leaf_fields(
+                e,
+                return_struct.fields[field_index],
+                "",
+                &fields,
+            )
         }
     }
     return fields
+}
+
+ownership_ir_append_owned_leaf_fields :: proc(
+    e: ^Emitter,
+    field: Struct_Field,
+    prefix: string,
+    fields: ^[dynamic]Struct_Field,
+    depth := 0,
+) {
+    if depth > 16 {
+        return
+    }
+    path := strings.clone(field.name)
+    if prefix != "" {
+        delete(path)
+        path = fmt.tprintf("%s.%s", prefix, field.name)
+    }
+    if type_supports_automatic_native_delete(field.ty) {
+        append(fields, Struct_Field{
+            name = path,
+            source_name = strings.clone(field.source_name),
+            ty = strings.clone(field.ty),
+            owns_string = field.owns_string,
+            owns_dynamic_array = field.owns_dynamic_array,
+        })
+        return
+    }
+    nested_struct, ok_nested := find_struct_decl(
+        e,
+        strings.trim_space(field.ty),
+    )
+    if ok_nested && !type_text_has_managed_lifecycle(e, nested_struct.name) {
+        for nested_field in nested_struct.fields {
+            ownership_ir_append_owned_leaf_fields(
+                e,
+                nested_field,
+                path,
+                fields,
+                depth+1,
+            )
+        }
+    }
+    delete(path)
+}
+
+ownership_ir_struct_fields_match :: proc(
+    lhs, rhs: []Struct_Field,
+) -> bool {
+    if len(lhs) != len(rhs) {
+        return false
+    }
+    for field, index in lhs {
+        if field.name != rhs[index].name || field.ty != rhs[index].ty {
+            return false
+        }
+    }
+    return true
 }
 
 proc_call_owned_result_fields_are_uncertain :: proc(
@@ -1028,7 +1144,26 @@ proc_call_owned_result_fields_are_uncertain :: proc(
        form.items[0].kind != .Symbol {
         return false
     }
-    _, proc_decl, ok_proc := resolve_proc_call_decl(e, form.items[0].text)
+    head := form.items[0].text
+    if head == "if" && len(form.items) == 4 {
+        then_fields := proc_call_owned_result_fields(e, form.items[2])
+        defer delete_struct_field_slice(&then_fields)
+        else_fields := proc_call_owned_result_fields(e, form.items[3])
+        defer delete_struct_field_slice(&else_fields)
+        return proc_call_owned_result_fields_are_uncertain(e, form.items[2]) ||
+               proc_call_owned_result_fields_are_uncertain(e, form.items[3]) ||
+               !ownership_ir_struct_fields_match(
+                   then_fields[:],
+                   else_fields[:],
+               )
+    }
+    if head == "do" && len(form.items) >= 2 {
+        return proc_call_owned_result_fields_are_uncertain(
+            e,
+            form.items[len(form.items)-1],
+        )
+    }
+    _, proc_decl, ok_proc := resolve_proc_call_decl(e, head)
     if !ok_proc || proc_decl == nil {
         return false
     }
@@ -1499,6 +1634,186 @@ ownership_ir_add_aggregate_cleanup_events :: proc(
     }
 }
 
+ownership_ir_form_produces_owned_value :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+) -> bool {
+    if form_produces_owned_value(form, e) {
+        return true
+    }
+    if form.kind != .List || len(form.items) == 0 ||
+       form.items[0].kind != .Symbol {
+        return false
+    }
+    head := form.items[0].text
+    if head == "if" && len(form.items) == 4 {
+        return ownership_ir_form_produces_owned_value(e, form.items[2]) &&
+               ownership_ir_form_produces_owned_value(e, form.items[3])
+    }
+    if head == "do" && len(form.items) >= 2 {
+        return ownership_ir_form_produces_owned_value(
+            e,
+            form.items[len(form.items)-1],
+        )
+    }
+    return false
+}
+
+ownership_ir_acquire_owned_struct_arg :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    form: CST_Form,
+    item_index: int,
+    value: CST_Form,
+    binding: Binding,
+    scope_places: ^[dynamic]int,
+    body: []CST_Form,
+    block: int,
+) {
+    if !ownership_ir_form_produces_owned_value(
+        lowering.emitter,
+        value,
+    ) {
+        return
+    }
+    field, ok_field := ownership_ir_struct_field_for_call_arg(
+        lowering.emitter,
+        form,
+        item_index,
+    )
+    if !ok_field {
+        return
+    }
+    place, ok_place := ownership_ir_struct_field_store_place(
+        lowering,
+        binding,
+        field^,
+        scope_places,
+        body,
+    )
+    if !ok_place {
+        return
+    }
+    _ = ownership_ir_add_event(
+        &lowering.result.graph,
+        block,
+        {kind = .Acquire, place = place, span = value.span},
+    )
+}
+
+ownership_ir_lower_nested_struct_arg :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    form: CST_Form,
+    item_index: int,
+    value: CST_Form,
+    binding: Binding,
+    scope_places: ^[dynamic]int,
+    body: []CST_Form,
+    block: int,
+) -> bool {
+    if binding.name == "" || value.kind != .List ||
+       len(value.items) == 0 || value.items[0].kind != .Symbol {
+        return false
+    }
+    field, ok_field := ownership_ir_struct_field_for_call_arg(
+        lowering.emitter,
+        form,
+        item_index,
+    )
+    if !ok_field {
+        return false
+    }
+    nested_head := map_name(value.items[0].text)
+    defer delete(nested_head)
+    nested_decl, ok_nested := find_struct_decl(
+        lowering.emitter,
+        nested_head,
+    )
+    if !ok_nested || nested_decl.name != field.ty {
+        return false
+    }
+
+    nested_name := fmt.tprintf("%s.%s", binding.name, field.name)
+    defer delete(nested_name)
+    nested_binding := binding
+    nested_binding.name = nested_name
+    place_start := len(lowering.result.places)
+    ownership_ir_lower_call(
+        lowering,
+        value,
+        block,
+        nested_binding,
+        scope_places,
+        body,
+    )
+    for &place in lowering.result.places[place_start:] {
+        if place.aggregate_root != nested_name {
+            continue
+        }
+        delete(place.aggregate_root)
+        place.aggregate_root = strings.clone(binding.name)
+        return_transfers_owner :=
+            aggregate_result_body_transfers_name(
+                lowering.emitter,
+                body,
+                binding.name,
+            ) &&
+            !aggregate_result_body_before_return_use_is_unsafe(
+                lowering.emitter,
+                body,
+                binding.name,
+            ) &&
+            !aggregate_result_body_before_return_use_is_unsafe(
+                lowering.emitter,
+                body,
+                place.name,
+            )
+        place.aggregate_return_transfers_owner = return_transfers_owner
+        place.aggregate_cleanup_unsupported =
+            place.aggregate_cleanup_unsupported ||
+            return_transfers_owner ||
+            body_deletes_or_returns_name(
+                lowering.emitter,
+                body,
+                binding.name,
+                true,
+            ) ||
+            body_assigns_name(body, binding.name) ||
+            body_assigns_name(body, place.name) ||
+            body_contains_result_capture(body, binding.name) ||
+            body_contains_result_capture(body, place.name)
+    }
+    return true
+}
+
+ownership_ir_union_arg_owns_place :: proc(
+    e: ^Emitter,
+    decl: ^Union_Decl,
+    lowering: ^Ownership_IR_Lowering,
+    place: int,
+) -> bool {
+    if decl == nil {
+        return false
+    }
+    for shadow_place in lowering.result.places {
+        if shadow_place.place != place || shadow_place.ty == "" {
+            continue
+        }
+        for variant in decl.variants {
+            if variant.ty == shadow_place.ty {
+                return ownership_type_has_destructor(e, variant.ty)
+            }
+        }
+        break
+    }
+    owned_count := 0
+    for variant in decl.variants {
+        if ownership_type_has_destructor(e, variant.ty) {
+            owned_count += 1
+        }
+    }
+    return owned_count == 1
+}
+
 ownership_ir_lower_call :: proc(
     lowering: ^Ownership_IR_Lowering,
     form: CST_Form,
@@ -1515,6 +1830,8 @@ ownership_ir_lower_call :: proc(
     head := map_name(form.items[0].text)
     defer delete(head)
     struct_decl, struct_constructor := find_struct_decl(lowering.emitter, head)
+    union_decl, union_constructor := find_union_decl(lowering.emitter, head)
+    aggregate_constructor := struct_constructor || union_constructor
     track_struct_fields := struct_constructor &&
                            !type_text_has_managed_lifecycle(
                                lowering.emitter,
@@ -1560,7 +1877,7 @@ ownership_ir_lower_call :: proc(
     }
     called_proc: ^Proc_Decl
     ok_called_proc := false
-    if has_tracked_arg && !struct_constructor {
+    if has_tracked_arg && !aggregate_constructor {
         _, called_proc, ok_called_proc = resolve_proc_call_decl(
             lowering.emitter,
             form.items[0].text,
@@ -1607,7 +1924,30 @@ ownership_ir_lower_call :: proc(
                 args[item_index-1],
             )
             if item.kind != .Symbol {
-                ownership_ir_lower_value_uses(lowering, item, block)
+                if !ownership_ir_lower_nested_struct_arg(
+                    lowering,
+                    form,
+                    item_index+1,
+                    item,
+                    store_binding,
+                    scope_places,
+                    store_body,
+                    block,
+                ) {
+                    ownership_ir_lower_value_uses(lowering, item, block)
+                }
+                if track_struct_fields {
+                    ownership_ir_acquire_owned_struct_arg(
+                        lowering,
+                        form,
+                        item_index+1,
+                        item,
+                        store_binding,
+                        scope_places,
+                        store_body,
+                        block,
+                    )
+                }
                 continue
             }
             ownership_ir_lower_borrow_use(
@@ -1621,7 +1961,7 @@ ownership_ir_lower_call :: proc(
                 item.text,
             )
             if !found {
-                if struct_constructor {
+                if aggregate_constructor {
                     ownership_ir_store_tracked_aggregate(
                         lowering,
                         item,
@@ -1632,13 +1972,21 @@ ownership_ir_lower_call :: proc(
             }
             event_kind := Ownership_IR_Event_Kind.Borrow
             store_target := -1
-            if struct_constructor {
+            if aggregate_constructor {
                 field_ty, known_field_ty := call_arg_expected_type(
                     lowering.emitter,
                     form,
                     item_index+1,
                 )
-                if known_field_ty {
+                owns_field := union_constructor &&
+                              !known_field_ty &&
+                              ownership_ir_union_arg_owns_place(
+                                  lowering.emitter,
+                                  union_decl,
+                                  lowering,
+                                  place,
+                              )
+                if known_field_ty || owns_field {
                     cleanup_scheduled := false
                     for shadow_place in lowering.result.places {
                         if shadow_place.place == place {
@@ -1646,13 +1994,16 @@ ownership_ir_lower_call :: proc(
                             break
                         }
                     }
-                    if ownership_type_has_destructor(
+                    owns_field = owns_field || ownership_type_has_destructor(
                         lowering.emitter,
                         field_ty,
-                    ) && !cleanup_scheduled {
+                    )
+                    if owns_field && !cleanup_scheduled {
                         event_kind = .Store
                     }
-                    delete(field_ty)
+                    if known_field_ty {
+                        delete(field_ty)
+                    }
                 }
                 if event_kind == .Store && track_struct_fields {
                     if field, ok_struct_field :=
@@ -1746,7 +2097,30 @@ ownership_ir_lower_call :: proc(
                 )
                 continue
             }
-            ownership_ir_lower_call(lowering, item, block)
+            if !ownership_ir_lower_nested_struct_arg(
+                lowering,
+                form,
+                item_index+1,
+                item,
+                store_binding,
+                scope_places,
+                store_body,
+                block,
+            ) {
+                ownership_ir_lower_call(lowering, item, block)
+            }
+            if track_struct_fields {
+                ownership_ir_acquire_owned_struct_arg(
+                    lowering,
+                    form,
+                    item_index+1,
+                    item,
+                    store_binding,
+                    scope_places,
+                    store_body,
+                    block,
+                )
+            }
             continue
         }
         if item.kind == .Brace {
@@ -1814,7 +2188,7 @@ ownership_ir_lower_call :: proc(
         )
         place, found := ownership_ir_lookup_name(lowering, item.text)
         if !found {
-            if struct_constructor {
+            if aggregate_constructor {
                 ownership_ir_store_tracked_aggregate(
                     lowering,
                     item,
@@ -1833,13 +2207,21 @@ ownership_ir_lower_call :: proc(
                 break
             }
         }
-        if event_kind == .Borrow && struct_constructor {
+        if event_kind == .Borrow && aggregate_constructor {
             field_ty, known_field_ty := call_arg_expected_type(
                 lowering.emitter,
                 form,
                 item_index+1,
             )
-            if known_field_ty {
+            owns_field := union_constructor &&
+                          !known_field_ty &&
+                          ownership_ir_union_arg_owns_place(
+                              lowering.emitter,
+                              union_decl,
+                              lowering,
+                              place,
+                          )
+            if known_field_ty || owns_field {
                 cleanup_scheduled := false
                 for shadow_place in lowering.result.places {
                     if shadow_place.place == place {
@@ -1847,11 +2229,16 @@ ownership_ir_lower_call :: proc(
                         break
                     }
                 }
-                if ownership_type_has_destructor(lowering.emitter, field_ty) &&
-                   !cleanup_scheduled {
+                owns_field = owns_field || ownership_type_has_destructor(
+                    lowering.emitter,
+                    field_ty,
+                )
+                if owns_field && !cleanup_scheduled {
                     event_kind = .Store
                 }
-                delete(field_ty)
+                if known_field_ty {
+                    delete(field_ty)
+                }
             }
         }
         if event_kind == .Borrow &&
@@ -3801,7 +4188,7 @@ ownership_ir_activate_bound_aggregate_places :: proc(
     for place in e.current_ownership_shadow.places {
         if place.aggregate_root != binding.name ||
            place.span != binding.target_span || place.ty == "" ||
-           place.aggregate_cleanup_unsupported {
+           place.aggregate_cleanup_unsupported || place.cleanup_scheduled {
             continue
         }
         placement, need := ownership_ir_cleanup_plan_placement(

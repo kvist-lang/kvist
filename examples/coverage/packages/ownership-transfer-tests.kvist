@@ -7,6 +7,15 @@
 (defstruct Link [observed: Owned-Value])
 (defstruct Envelope [link: Link])
 (defstruct Owned-Pair [left: string right: string marker: int])
+(defstruct Direct-Inner [text: string])
+(defstruct Direct-Outer [inner: Direct-Inner marker: int])
+(defunion Owned-Choice [owned: Owned-Value number: int])
+(defunion Text-Choice [text: string values: [dynamic]int number: int])
+
+(defn- clone-text [value: string] -> string
+  (let [[result error] (strings.clone value)]
+    (assert (= error nil))
+    result))
 
 (defn- clone-owned [value: string] -> Owned-Value
   (let [[result error] (strings.clone value)]
@@ -28,6 +37,39 @@
     (delete pair.left)
     (delete pair.right))
   (delete pairs))
+
+(defn- make-pair [marker: int] -> Owned-Pair
+  (Owned-Pair
+    :left (clone-text "left")
+    :right (clone-text "right")
+    :marker marker))
+
+(defn- delete-pair [pair: Owned-Pair]
+  (delete pair.left)
+  (delete pair.right))
+
+(defn- delete-choice [choice: Owned-Choice]
+  (case choice
+    (Owned-Value value) (delete value.value)
+    (int _) (discard 0)
+    (discard 0)))
+
+(defn- delete-text-choice [choice: Text-Choice]
+  (case choice
+    (string value) (delete value)
+    ([dynamic]int values) (delete values)
+    (int _) (discard 0)
+    (discard 0)))
+
+(defn- delete-direct-outers [values: [dynamic]Direct-Outer]
+  (for [value values]
+    (delete value.inner.text))
+  (delete values))
+
+(defn- make-direct-outer [] -> Direct-Outer
+  (Direct-Outer
+    :inner (Direct-Inner :text (clone-text "nested-return"))
+    :marker 5))
 
 (t.deftest named-owned-field-moves-through-struct-into-array
   (let [owned (clone-owned "named")
@@ -72,3 +114,49 @@
         (append (addr pairs) pair)))
     (t.is (= (count pairs) 3))
     (t.is (= pairs[2].marker 2))))
+
+(t.deftest conditional-owned-procedure-result-is-cleaned
+  (let [pair (if true (make-pair 1) (make-pair 2))]
+    (t.is (= pair.marker 1))))
+
+(t.deftest conditional-owned-result-alias-has-one-cleanup
+  (let [pair (if false (make-pair 1) (make-pair 2))
+        moved pair :defer-with delete-pair]
+    (t.is (= moved.marker 2))))
+
+(t.deftest named-owned-struct-payload-moves-into-union
+  (let [owned (clone-owned "union-named")
+        choice (Owned-Choice :owned owned) :defer-with delete-choice]
+    (t.is (= (case choice (Owned-Value value) value.value "") "union-named"))))
+
+(t.deftest positional-owned-struct-payload-moves-into-union
+  (let [owned (clone-owned "union-positional")
+        choice (Owned-Choice owned) :defer-with delete-choice]
+    (t.is (= (case choice (Owned-Value value) value.value "") "union-positional"))))
+
+(t.deftest direct-owned-call-in-struct-field-is-cleaned
+  (let [owned (Owned-Value :value (clone-text "direct"))]
+    (t.is (= owned.value "direct"))))
+
+(t.deftest positional-owned-string-payload-moves-into-union
+  (let [text (clone-text "union-string")
+        choice (Text-Choice text) :defer-with delete-text-choice]
+    (t.is (= (case choice (string value) value "") "union-string"))))
+
+(t.deftest direct-nested-owned-field-is-cleaned
+  (let [outer (Direct-Outer
+                :inner (Direct-Inner :text (clone-text "direct-nested"))
+                :marker 3)]
+    (t.is (= outer.inner.text "direct-nested"))))
+
+(t.deftest direct-nested-owned-field-moves-to-array
+  (let [outer (Direct-Outer
+                :inner (Direct-Inner :text (clone-text "nested-array"))
+                :marker 4)
+        values (make [dynamic]Direct-Outer) :defer-with delete-direct-outers]
+    (append (addr values) outer)
+    (t.is (= values[0].inner.text "nested-array"))))
+
+(t.deftest returned-direct-nested-owned-field-is-cleaned
+  (let [outer (make-direct-outer)]
+    (t.is (= outer.inner.text "nested-return"))))

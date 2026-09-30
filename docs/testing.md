@@ -161,8 +161,8 @@ or source directory is newer. Set `KVIST_PBT_CACHE_DIR` to move the cache or
 variables still bypass the corresponding cached target.
 
 The runner accepts PBT options such as `--property`, `--tag`, `--num-tests`,
-`--seed`, `--replay-seed`, and `--replay-choices`. CI checks out an exact PBT
-commit under `.tooling/pbt` so the test dependency is reproducible.
+`--seed`, `--replay-seed`, and `--replay-choices`. Property suites are local
+development tools and are not scheduled or run by CI.
 
 The reader properties generate recursive forms, escaped string and regex
 literals, reader sugar, and discarded forms. The same generated model is also
@@ -313,8 +313,12 @@ to remain free of ownership uncertainty. Additional properties vary three to
 five owned leaves across direct returns, fixed and dynamic arrays, consuming
 calls, and outer structs; exercise conditional construction, conditional
 storage, and loop storage; and require definite KVO003 diagnostics when leaf,
-aggregate, fixed-array, or consuming-call aliases are transferred twice. Run
-only these fast frontend checks with:
+aggregate, fixed-array, or consuming-call aliases are transferred twice. They
+also vary conditional procedure results and explicit aggregate aliases, staged
+and direct struct or scalar union payloads, and direct or conditional owned
+field expressions across nested constructors and procedure returns; these must
+select exactly one cleanup owner and diagnose field replacement with definite
+KVO004. Run only these fast frontend checks with:
 
 ```sh
 ./scripts/test_pbt_compiler.sh --tag ownership --num-tests 50 --text

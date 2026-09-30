@@ -767,6 +767,62 @@ call_arg_expected_type :: proc(e: ^Emitter, call: CST_Form, item_index: int) -> 
         }
         return "", false
     }
+    if union_decl, ok_union := find_union_decl(e, head_name); ok_union {
+        args := call.items[1:]
+        if keyword_arg_tail_is_syntax(args, 0) {
+            if arg_index != 1 {
+                return "", false
+            }
+            variant_name, ok_key := brace_key_name(args[0])
+            if !ok_key {
+                return "", false
+            }
+            for variant in union_decl.variants {
+                if variant.name == variant_name {
+                    return strings.clone(variant.ty), true
+                }
+            }
+            return "", false
+        }
+        if len(args) != 1 || arg_index != 0 {
+            return "", false
+        }
+        if value_ty, ok_value_ty := obvious_form_type(e, args[0]);
+           ok_value_ty {
+            defer delete(value_ty)
+            selected := ""
+            for variant in union_decl.variants {
+                if variant.ty != value_ty {
+                    continue
+                }
+                if selected != "" {
+                    return "", false
+                }
+                selected = variant.ty
+            }
+            if selected != "" {
+                return strings.clone(selected), true
+            }
+        }
+        selected := ""
+        for variant in union_decl.variants {
+            if !literal_matches_struct_field_type(
+                e,
+                variant.ty,
+                args[0],
+            ) {
+                continue
+            }
+            if selected != "" {
+                return "", false
+            }
+            selected = variant.ty
+        }
+        if selected != "" {
+            return strings.clone(selected), true
+        }
+        return "", false
+    }
     if _, proc_decl, ok_proc := resolve_proc_call_decl(e, call.items[0].text); ok_proc && proc_decl != nil {
         args := call.items[1:]
         resolution := keyword_args_call_resolution(e, proc_decl, args)

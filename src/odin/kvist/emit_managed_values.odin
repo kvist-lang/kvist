@@ -836,7 +836,7 @@ form_requires_owned_discard_cleanup :: proc(e: ^Emitter, form: CST_Form) -> bool
         return true
     }
     returned_fields := proc_call_owned_result_fields(e, form)
-    defer delete(returned_fields)
+    defer delete_struct_field_slice(&returned_fields)
     return len(returned_fields) > 0
 }
 
@@ -875,7 +875,7 @@ emit_owned_discard_cleanup :: proc(
         return true
     }
     returned_fields := proc_call_owned_result_fields(e, form)
-    defer delete(returned_fields)
+    defer delete_struct_field_slice(&returned_fields)
     if allow_managed && len(returned_fields) > 0 {
         temp := thread_temp_name(e)
         emit_prefixed_expr_mapped(e, fmt.tprintf("%s := ", temp), expr, form.span)

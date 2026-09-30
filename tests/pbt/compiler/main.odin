@@ -526,6 +526,30 @@ main :: proc() {
 			description = "generated leaf and aggregate aliases cannot be transferred twice without a definite use-after-transfer diagnostic",
 			tags = COMPILER_OWNERSHIP_TAGS[:],
 		},
+		{
+			name = "conditional owned results preserve cleanup",
+			property = conditional_owned_results_preserve_cleanup,
+			description = "owned struct results from if and do expressions retain automatic cleanup or transfer it exactly once to an explicitly cleaned alias",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
+		{
+			name = "owned struct payloads transfer into unions",
+			property = owned_struct_payloads_transfer_into_unions,
+			description = "named, positional, staged, and direct union construction moves nested owned struct payloads without retaining source cleanup",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
+		{
+			name = "owned scalar payloads transfer into unions",
+			property = owned_scalar_payloads_transfer_into_unions,
+			description = "named, positional, staged, and direct union construction moves owned scalar payloads without retaining source cleanup",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
+		{
+			name = "direct owned struct fields match cleanup rules",
+			property = direct_owned_struct_fields_match_cleanup_rules,
+			description = "direct and conditional owned calls in struct fields receive scoped cleanup and definite overwrite diagnostics",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
 	}
 	pbt.run_cli(properties[:], os.args[1:], {
 		num_tests = 25,

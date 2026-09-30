@@ -3973,3 +3973,322 @@ delete_discarded_third_party_split_slice_from_alloc_shape :: proc(t: ^testing.T)
     testing.expect_value(t, len(result.warnings), 0)
     testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
+
+@(test)
+conditional_owned_struct_results_keep_their_field_cleanup :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defstruct Payload [left: string right: string marker: int])
+
+(defn clone-string [value: string] -> string
+  (let [[result error] (strings.clone value)]
+    (assert (= error nil))
+    result))
+
+(defn make-payload [marker: int] -> Payload
+  (Payload
+    :left (clone-string "left")
+    :right (clone-string "right")
+    :marker marker))
+
+(defn delete-payload [payload: Payload]
+  (delete payload.left)
+  (delete payload.right))
+
+(defn clean [flag: bool] -> int
+  (let [payload (if flag (make-payload 1) (make-payload 2))]
+    payload.marker))
+
+(defn transfer [flag: bool] -> int
+  (let [payload (if flag (make-payload 1) (make-payload 2))
+        moved payload :defer-with delete-payload]
+    moved.marker))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(payload.left)"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(payload.right)"),
+        true,
+    )
+    transfer_start := strings.index(result.output, "transfer :: proc")
+    testing.expect(t, transfer_start >= 0)
+    if transfer_start >= 0 {
+        transfer_output := result.output[transfer_start:]
+        testing.expect_value(
+            t,
+            strings.contains(transfer_output, "defer delete(payload.left)"),
+            false,
+        )
+        testing.expect_value(
+            t,
+            strings.contains(transfer_output, "defer delete(payload.right)"),
+            false,
+        )
+        testing.expect_value(
+            t,
+            strings.contains(transfer_output, "defer delete_payload(moved)"),
+            true,
+        )
+    }
+}
+
+@(test)
+owned_struct_payloads_transfer_into_named_and_positional_unions :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defstruct Owned [text: string])
+(defunion Choice [owned: Owned raw: int])
+
+(defn clone-string [value: string] -> string
+  (let [[result error] (strings.clone value)]
+    (assert (= error nil))
+    result))
+
+(defn delete-choice [choice: Choice]
+  (case choice
+    (Owned value) (delete value.text)
+    (int _) (discard 0)
+    (discard 0)))
+
+(defn named [] -> int
+  (let [text (clone-string "named")
+        owned (Owned :text text)
+        choice (Choice :owned owned) :defer-with delete-choice]
+    (case choice (Owned value) (count value.text) 0)))
+
+(defn positional [] -> int
+  (let [text (clone-string "positional")
+        owned (Owned text)
+        choice (Choice owned) :defer-with delete-choice]
+    (case choice (Owned value) (count value.text) 0)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(owned.text)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.count(result.output, "defer delete_choice(choice)"),
+        2,
+    )
+}
+
+@(test)
+owned_string_payloads_transfer_into_named_and_positional_unions :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defunion Choice [text: string values: [dynamic]int raw: int])
+
+(defn clone-string [value: string] -> string
+  (let [[result error] (strings.clone value)]
+    (assert (= error nil))
+    result))
+
+(defn delete-choice [choice: Choice]
+  (case choice
+    (string value) (delete value)
+    ([dynamic]int values) (delete values)
+    (int _) (discard 0)
+    (discard 0)))
+
+(defn named [] -> int
+  (let [text (clone-string "named")
+        choice (Choice :text text) :defer-with delete-choice]
+    (case choice (string value) (count value) 0)))
+
+(defn positional [] -> int
+  (let [text (clone-string "positional")
+        choice (Choice text) :defer-with delete-choice]
+    (case choice (string value) (count value) 0)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(text)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.count(result.output, "defer delete_choice(choice)"),
+        2,
+    )
+}
+
+@(test)
+direct_owned_struct_fields_are_cleaned_and_overwrites_are_diagnosed :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defstruct Owned [text: string])
+(defstruct Inner [text: string])
+(defstruct Outer [inner: Inner marker: int])
+
+(defn clone-string [value: string] -> string
+  (let [[result error] (strings.clone value)]
+    (assert (= error nil))
+    result))
+
+(defn clean [] -> int
+  (let [owned (Owned :text (clone-string "owned"))]
+    (count owned.text)))
+
+(defn clean-nested [] -> int
+  (let [outer (Outer
+                :inner (Inner :text (clone-string "nested"))
+                :marker 1)]
+    (count outer.inner.text)))
+
+(defn make-nested [] -> Outer
+  (Outer
+    :inner (Inner :text (clone-string "returned"))
+    :marker 2))
+
+(defn clean-returned-nested [] -> int
+  (let [outer (make-nested)]
+    (count outer.inner.text)))
+
+(defn replace [] -> int
+  (let [owned (Owned :text (clone-string "first"))]
+    (set! owned.text (clone-string "second"))
+    (count owned.text)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 1)
+    if len(result.warnings) == 1 {
+        testing.expect_value(
+            t,
+            result.warnings[0].code,
+            kvist.Compile_Warning_Code.Ownership_Overwrite,
+        )
+        testing.expect_value(
+            t,
+            result.warnings[0].confidence,
+            kvist.Compile_Warning_Confidence.Definite,
+        )
+    }
+    clean_start := strings.index(result.output, "clean :: proc")
+    replace_start := strings.index(result.output, "replace :: proc")
+    testing.expect(t, clean_start >= 0 && replace_start > clean_start)
+    if clean_start >= 0 && replace_start > clean_start {
+        clean_output := result.output[clean_start:replace_start]
+        testing.expect_value(
+            t,
+            strings.contains(clean_output, "defer delete(owned.text)"),
+            true,
+        )
+        testing.expect_value(
+            t,
+            strings.count(clean_output, "defer delete(outer.inner.text)"),
+            2,
+        )
+    }
+}
+
+@(test)
+warn_when_direct_field_result_ownership_differs_by_branch :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defstruct Leaf [text: string])
+(defstruct Inner [left: string right: string])
+(defstruct Outer [inner: Inner])
+
+(defn clone-string [value: string] -> string
+  (let [[result error] (strings.clone value)]
+    (assert (= error nil))
+    result))
+
+(defn maybe-leaf [owned?: bool] -> Leaf
+  (Leaf :text (if owned? (clone-string "owned") "borrowed")))
+
+(defn use [owned?: bool] -> int
+  (let [leaf (maybe-leaf owned?)]
+    (count leaf.text)))
+
+(defn maybe-outer [] -> Outer
+  (Outer :inner (Inner
+                  :left (clone-string "owned")
+                  :right "borrowed")))
+
+(defn use-outer [] -> int
+  (let [outer (maybe-outer)]
+    (+ (count outer.inner.left) (count outer.inner.right))))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 2)
+    for warning in result.warnings {
+        testing.expect_value(
+            t,
+            warning.code,
+            kvist.Compile_Warning_Code.Ownership_Automatic_Cleanup_Skipped,
+        )
+        testing.expect_value(
+            t,
+            warning.confidence,
+            kvist.Compile_Warning_Confidence.Conservative,
+        )
+    }
+}
