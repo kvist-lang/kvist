@@ -713,6 +713,64 @@ return_spec_matches_owned_alloc_kind :: proc(returns: Return_Spec, kind: Owned_A
     return false
 }
 
+append_owned_aggregate_field_names :: proc(
+    e: ^Emitter,
+    binding: Binding,
+    owned_names: ^[dynamic]string,
+    kind: Owned_Alloc_Result_Kind,
+) {
+    if e == nil || binding.is_destructure || binding.is_result_binding ||
+       binding.name == "" {
+        return
+    }
+    fields := proc_call_owned_result_fields(e, binding.value)
+    defer delete_struct_field_slice(&fields)
+    if len(fields) == 0 && binding.value.kind == .List &&
+       len(binding.value.items) > 0 &&
+       binding.value.items[0].kind == .Symbol {
+        type_name := map_name(binding.value.items[0].text)
+        if struct_decl, ok_struct := find_struct_decl(e, type_name); ok_struct {
+            uncertain := false
+            owned_fields, known := aggregate_result_owned_fields(
+                e,
+                binding.value,
+                struct_decl,
+                owned_names[:],
+                nil,
+                nil,
+                nil,
+                &uncertain,
+            )
+            if known && !uncertain {
+                for field_index in owned_fields {
+                    if field_index < 0 || field_index >= len(struct_decl.fields) {
+                        continue
+                    }
+                    ownership_ir_append_owned_leaf_fields(
+                        e,
+                        struct_decl.fields[field_index],
+                        "",
+                        &fields,
+                    )
+                }
+            }
+            delete(owned_fields)
+        }
+        delete(type_name)
+    }
+    for field in fields {
+        if !return_type_matches_owned_alloc_kind(field.ty, kind) {
+            continue
+        }
+        name := fmt.tprintf("%s.%s", binding.name, field.name)
+        if string_slice_contains_name(owned_names[:], name) {
+            delete(name)
+            continue
+        }
+        append(owned_names, name)
+    }
+}
+
 form_is_untracked_symbol_result :: proc(form: CST_Form, owned_names: []string) -> bool {
     if form.kind != .Symbol {
         return false
@@ -913,6 +971,12 @@ track_owned_assignment :: proc(form: CST_Form, owned_names: ^[dynamic]string, ki
         defer delete(local_names)
         for binding in bindings {
             binding_declared_names_append(binding, &local_names)
+            append_owned_aggregate_field_names(
+                e,
+                binding,
+                &scoped_names,
+                kind,
+            )
             if binding.is_destructure &&
                len(binding.pattern) > 0 &&
                binding.pattern[0] != "" &&
@@ -1030,6 +1094,12 @@ form_infers_owned_alloc_result :: proc(form: CST_Form, owned_names: []string, ki
             append(&scoped_names, name)
         }
         for binding in bindings {
+            append_owned_aggregate_field_names(
+                e,
+                binding,
+                &scoped_names,
+                kind,
+            )
             if binding.is_destructure &&
                len(binding.pattern) > 0 &&
                binding.pattern[0] != "" &&
@@ -1042,6 +1112,162 @@ form_infers_owned_alloc_result :: proc(form: CST_Form, owned_names: []string, ki
             }
         }
         return body_tail_infers_owned_alloc_result(form.items[2:], scoped_names[:], kind, e, depth+1)
+    }
+    return false
+}
+
+form_may_infer_owned_alloc_result :: proc(
+    form: CST_Form,
+    owned_names: []string,
+    kind: Owned_Alloc_Result_Kind,
+    e: ^Emitter = nil,
+    depth: int = 0,
+) -> bool {
+    if depth > 16 {
+        return false
+    }
+    if form_is_owned_alloc_call(form, kind, e) {
+        return true
+    }
+    if form.kind == .Symbol {
+        name := map_name(form.text)
+        defer delete(name)
+        return string_slice_contains_name(owned_names, name)
+    }
+    if form.kind != .List || len(form.items) == 0 ||
+       form.items[0].kind != .Symbol {
+        return false
+    }
+    if e != nil {
+        direct_name := map_name(form.items[0].text)
+        if proc_decl, ok_proc := find_proc_decl(e, direct_name); ok_proc {
+            may_own := proc_decl.owns_result ||
+                       proc_decl.owned_result_uncertain ||
+                       proc_decl_infers_owned_alloc_result_depth(
+                           e,
+                           proc_decl,
+                           kind,
+                           depth+1,
+                       )
+            delete(direct_name)
+            if may_own {
+                return true
+            }
+        } else {
+            delete(direct_name)
+        }
+    }
+    head := form.items[0].text
+    switch head {
+    case "return":
+        for item in form.items[1:] {
+            if form_may_infer_owned_alloc_result(
+                item,
+                owned_names,
+                kind,
+                e,
+                depth+1,
+            ) {
+                return true
+            }
+        }
+    case "do", "block":
+        if len(form.items) < 2 {
+            return false
+        }
+        scoped_names := make([dynamic]string, len(owned_names))
+        defer delete(scoped_names)
+        copy(scoped_names[:], owned_names)
+        for item in form.items[1:len(form.items)-1] {
+            track_owned_assignment(item, &scoped_names, kind, e, depth+1)
+        }
+        return form_may_infer_owned_alloc_result(
+            form.items[len(form.items)-1],
+            scoped_names[:],
+            kind,
+            e,
+            depth+1,
+        )
+    case "if":
+        return len(form.items) == 4 &&
+               (form_may_infer_owned_alloc_result(
+                    form.items[2],
+                    owned_names,
+                    kind,
+                    e,
+                    depth+1,
+                ) ||
+                form_may_infer_owned_alloc_result(
+                    form.items[3],
+                    owned_names,
+                    kind,
+                    e,
+                    depth+1,
+                ))
+    case "let":
+        if len(form.items) < 3 {
+            return false
+        }
+        bindings, _, ok_bind := parse_let_bindings(form.items[1])
+        if !ok_bind {
+            return false
+        }
+        defer delete(bindings)
+        scoped_names: [dynamic]string
+        defer delete(scoped_names)
+        append(&scoped_names, ..owned_names)
+        for binding in bindings {
+            append_owned_aggregate_field_names(
+                e,
+                binding,
+                &scoped_names,
+                kind,
+            )
+            if !binding.is_destructure && binding.name != "" &&
+               form_may_infer_owned_alloc_result(
+                   binding.value,
+                   scoped_names[:],
+                   kind,
+                   e,
+                   depth+1,
+               ) {
+                append(&scoped_names, binding.name)
+            }
+        }
+        for item in form.items[2:len(form.items)-1] {
+            track_owned_assignment(item, &scoped_names, kind, e, depth+1)
+        }
+        return form_may_infer_owned_alloc_result(
+            form.items[len(form.items)-1],
+            scoped_names[:],
+            kind,
+            e,
+            depth+1,
+        )
+    case "type-case":
+        for i := 3; i < len(form.items); i += 2 {
+            if form_may_infer_owned_alloc_result(
+                form.items[i],
+                owned_names,
+                kind,
+                e,
+                depth+1,
+            ) {
+                return true
+            }
+        }
+    case "match":
+        for i := 3; i < len(form.items); i += 2 {
+            if form_may_infer_owned_alloc_result(
+                form.items[i],
+                owned_names,
+                kind,
+                e,
+                depth+1,
+            ) {
+                return true
+            }
+        }
     }
     return false
 }
@@ -1084,6 +1310,12 @@ form_all_returns_infer_owned_alloc_result :: proc(form: CST_Form, owned_names: [
                 append(&scoped_names, name)
             }
             for binding in bindings {
+                append_owned_aggregate_field_names(
+                    e,
+                    binding,
+                    &scoped_names,
+                    kind,
+                )
                 if binding.is_destructure &&
                    len(binding.pattern) > 0 &&
                    binding.pattern[0] != "" &&
@@ -1174,6 +1406,42 @@ proc_decl_infers_owned_result :: proc(e: ^Emitter, proc_decl: ^Proc_Decl, depth:
            proc_decl_infers_owned_alloc_result_depth(e, proc_decl, .Slice, depth+1) ||
            proc_decl_infers_owned_alloc_result_depth(e, proc_decl, .Opaque, depth+1) ||
            proc_decl_infers_owned_alloc_result_depth(e, proc_decl, .Container, depth+1)
+}
+
+proc_decl_may_return_owned_result :: proc(
+    e: ^Emitter,
+    proc_decl: ^Proc_Decl,
+) -> bool {
+    if proc_decl == nil || len(proc_decl.body) == 0 {
+        return false
+    }
+    kinds := [?]Owned_Alloc_Result_Kind{
+        .String,
+        .Bytes,
+        .Slice,
+        .Opaque,
+        .Container,
+    }
+    for kind in kinds {
+        if !return_spec_matches_owned_alloc_kind(proc_decl.returns, kind) {
+            continue
+        }
+        scoped_names: [dynamic]string
+        for form in proc_decl.body[:len(proc_decl.body)-1] {
+            track_owned_assignment(form, &scoped_names, kind, e)
+        }
+        may_own := form_may_infer_owned_alloc_result(
+            proc_decl.body[len(proc_decl.body)-1],
+            scoped_names[:],
+            kind,
+            e,
+        )
+        delete(scoped_names)
+        if may_own {
+            return true
+        }
+    }
+    return false
 }
 
 proc_decl_owned_result_head :: proc(e: ^Emitter, name: string) -> bool {

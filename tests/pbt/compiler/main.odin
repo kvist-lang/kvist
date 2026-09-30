@@ -550,6 +550,12 @@ main :: proc() {
 			description = "direct and conditional owned calls in nested struct fields receive scoped cleanup, safe reassignment after delete, and definite unsafe-overwrite diagnostics",
 			tags = COMPILER_OWNERSHIP_TAGS[:],
 		},
+		{
+			name = "nested owned scalar fields preserve transfer cleanup",
+			property = nested_owned_scalar_fields_preserve_transfer_cleanup,
+			description = "generated nested fields moved through scalar returns, explicit aliases, and branch returns keep exactly one cleanup obligation",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
 	}
 	pbt.run_cli(properties[:], os.args[1:], {
 		num_tests = 25,

@@ -186,6 +186,7 @@ Proc_Decl :: struct {
     returns:           Return_Spec,
     owns_result:       bool,
     borrows_result:    bool,
+    owned_result_uncertain: bool,
     owned_result_fields: [dynamic]int,
     owned_result_fields_uncertain: bool,
     prefix_directives: [dynamic]string,

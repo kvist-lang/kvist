@@ -5,6 +5,7 @@ package kvist
 // fields directly and diagnostics can share the same representation.
 Procedure_Ownership_Contract :: struct {
     result_flow:             Ownership_Result_Flow,
+    result_uncertain:        bool,
     owned_result_fields:     []int,
     result_fields_uncertain: bool,
     consumed_parameters:     [dynamic]int,
@@ -15,6 +16,7 @@ procedure_result_ownership_contract :: proc(
     e: ^Emitter = nil,
 ) -> Procedure_Ownership_Contract {
     contract := Procedure_Ownership_Contract{
+        result_uncertain = decl.owned_result_uncertain,
         owned_result_fields = decl.owned_result_fields[:],
         result_fields_uncertain = decl.owned_result_fields_uncertain,
     }
@@ -81,6 +83,7 @@ procedure_ownership_contract_has_facts :: proc(
     contract: ^Procedure_Ownership_Contract,
 ) -> bool {
     return contract.result_flow != .Unknown ||
+           contract.result_uncertain ||
            len(contract.owned_result_fields) > 0 ||
            contract.result_fields_uncertain ||
            len(contract.consumed_parameters) > 0

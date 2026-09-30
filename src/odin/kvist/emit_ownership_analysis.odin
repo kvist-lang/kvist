@@ -1782,6 +1782,15 @@ infer_proc_lifetime_facts :: proc(e: ^Emitter) {
                 proc_decl.borrows_result = true
                 changed = true
             }
+            result_uncertain := !owns_result && !borrows_result &&
+                                proc_decl_may_return_owned_result(
+                                    e,
+                                    proc_decl,
+                                )
+            if result_uncertain != proc_decl.owned_result_uncertain {
+                proc_decl.owned_result_uncertain = result_uncertain
+                changed = true
+            }
             if len(proc_decl.owned_result_fields) == 0 {
                 owned_fields, known_owned_fields, uncertain_owned_fields :=
                     proc_decl_infer_owned_result_fields(e, proc_decl)

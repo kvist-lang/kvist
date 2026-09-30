@@ -126,8 +126,9 @@ package_decls_interface_hash :: proc(decls: []IR_Decl) -> u64 {
             hash = package_artifact_hash_text(
                 hash,
                 fmt.tprintf(
-                    "%d:%t",
+                    "%d:%t:%t",
                     ownership_contract.result_flow,
+                    ownership_contract.result_uncertain,
                     ownership_contract.result_fields_uncertain,
                 ),
             )

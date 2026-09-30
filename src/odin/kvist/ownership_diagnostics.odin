@@ -46,6 +46,17 @@ emit_ownership_plan_diagnostics :: proc(
                 .Ownership_Automatic_Cleanup_Skipped,
                 .Conservative,
             )
+        case .Result_Ownership_Uncertain:
+            emit_coded_warning(
+                e,
+                fmt.tprintf(
+                    "ownership of result from %s differs across return paths; return a consistently owned or borrowed value, or expose ownership explicitly",
+                    display_head_name(diagnostic.subject),
+                ),
+                diagnostic.span,
+                .Ownership_Automatic_Cleanup_Skipped,
+                .Conservative,
+            )
         case .Explicit_Aggregate_Cleanup_Conditional:
             emit_coded_warning(
                 e,

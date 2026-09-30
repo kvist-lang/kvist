@@ -666,6 +666,23 @@ ownership_ir_lower_binding :: proc(
             )
         }
     }
+    if proc_call_result_ownership_is_uncertain(
+        lowering.emitter,
+        binding.value,
+    ) {
+        head, ok_head := form_head_symbol_text(binding.value)
+        if ok_head {
+            append(
+                &lowering.result.diagnostic_candidates,
+                Ownership_IR_Diagnostic_Fact{
+                    kind = .Result_Ownership_Uncertain,
+                    certainty = .Conservative,
+                    subject = strings.clone(head),
+                    span = binding.value.span,
+                },
+            )
+        }
+    }
     if !binding.is_destructure && !binding.is_result_binding &&
        binding.name != "" {
         returned_fields := proc_call_owned_result_fields(
@@ -820,6 +837,14 @@ ownership_ir_lower_binding :: proc(
         if binding_value_produces_owned_value(binding, lowering.emitter) ||
            automatic_cleanup != .None || binding.deferred_delete ||
            binding.err_deferred_delete || binding.defer_with_cleanup {
+            moved_source := -1
+            has_moved_source := false
+            if binding.value.kind == .Symbol {
+                moved_source, has_moved_source = ownership_ir_lookup_name(
+                    lowering,
+                    binding.value.text,
+                )
+            }
             place := ownership_ir_add_shadow_place(
                 lowering,
                 binding.name,
@@ -838,15 +863,28 @@ ownership_ir_lower_binding :: proc(
                 automatic_cleanup = automatic_cleanup,
             )
             append(scope_places, place)
-            _ = ownership_ir_add_event(
-                &lowering.result.graph,
-                current_block,
-                {
-                    kind = .Acquire,
-                    place = place,
-                    span = binding.value.span,
-                },
-            )
+            if has_moved_source && moved_source != place {
+                _ = ownership_ir_add_event(
+                    &lowering.result.graph,
+                    current_block,
+                    {
+                        kind = .Move,
+                        place = moved_source,
+                        target = place,
+                        span = binding.value.span,
+                    },
+                )
+            } else {
+                _ = ownership_ir_add_event(
+                    &lowering.result.graph,
+                    current_block,
+                    {
+                        kind = .Acquire,
+                        place = place,
+                        span = binding.value.span,
+                    },
+                )
+            }
         }
         ownership_ir_schedule_binding_cleanup(lowering, binding, current_block)
         borrow_place := ownership_ir_add_borrow_place(
@@ -1171,6 +1209,34 @@ proc_call_owned_result_fields_are_uncertain :: proc(
     contract := procedure_result_ownership_contract(proc_decl, e)
     defer procedure_ownership_contract_delete(&contract)
     return contract.result_fields_uncertain
+}
+
+proc_call_result_ownership_is_uncertain :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+) -> bool {
+    if e == nil || form.kind != .List || len(form.items) == 0 ||
+       form.items[0].kind != .Symbol {
+        return false
+    }
+    head := form.items[0].text
+    if head == "if" && len(form.items) == 4 {
+        return proc_call_result_ownership_is_uncertain(e, form.items[2]) ||
+               proc_call_result_ownership_is_uncertain(e, form.items[3])
+    }
+    if head == "do" && len(form.items) >= 2 {
+        return proc_call_result_ownership_is_uncertain(
+            e,
+            form.items[len(form.items)-1],
+        )
+    }
+    _, proc_decl, ok_proc := resolve_proc_call_decl(e, head)
+    if !ok_proc || proc_decl == nil {
+        return false
+    }
+    contract := procedure_result_ownership_contract(proc_decl, e)
+    defer procedure_ownership_contract_delete(&contract)
+    return contract.result_uncertain
 }
 
 ownership_ir_add_struct_field_place :: proc(
@@ -3946,7 +4012,7 @@ ownership_ir_per_exit_candidate :: proc(
 ) -> bool {
     placement, _ := ownership_ir_cleanup_plan_placement(plan, place.place)
     if !plan.valid ||
-       !place.direct_imported_contract ||
+       (!place.direct_imported_contract && place.aggregate_root == "") ||
        place.cleanup_head == "" ||
        place.legacy_cleanup != .None ||
        placement != .Per_Exit {
@@ -4291,6 +4357,22 @@ ownership_ir_activate_bound_aggregate_places :: proc(
             e.current_ownership_plan^,
             place.place,
         )
+        if placement == .Per_Exit && need != .None {
+            active := Ownership_IR_Active_Place{place = place.place}
+            if ownership_ir_active_place_needs_owner_flag(e, place.place) {
+                active.owner_flag = managed_owner_flag_name(e)
+                emit_line(
+                    e,
+                    fmt.tprintf("%s := true", active.owner_flag),
+                )
+            }
+            append(
+                &e.ownership_active_per_exit_places,
+                active,
+            )
+            e.ownership_plan_adoptions += 1
+            continue
+        }
         if placement != .Scope_Defer || need == .None {
             continue
         }

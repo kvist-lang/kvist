@@ -74,6 +74,22 @@
 (defn- consume-direct-outer [value: Direct-Outer]
   (delete value.inner.text))
 
+(defn- delete-text [value: string]
+  (delete value))
+
+(defn- extract-direct-text [] -> string
+  (let [outer (Direct-Outer
+                :inner (Direct-Inner :text (clone-text "field-return"))
+                :marker 6)]
+    outer.inner.text))
+
+(defn- extract-branch-text [left?: bool] -> string
+  (let [left (make-direct-outer)
+        right (Direct-Outer
+                :inner (Direct-Inner :text (clone-text "right"))
+                :marker 7)]
+    (if left? left.inner.text right.inner.text)))
+
 (t.deftest named-owned-field-moves-through-struct-into-array
   (let [owned (clone-owned "named")
         link (Link :observed owned)
@@ -183,3 +199,17 @@
         (set! owned.value (clone-text "new"))
         (discard 0))
       (t.is true))))
+
+(t.deftest nested-owned-field-return-is-cleaned-by-caller
+  (let [value (extract-direct-text)]
+    (t.is (= value "field-return"))))
+
+(t.deftest branch-field-return-cleans-unselected-owner
+  (for [left? ([2]bool [false true])]
+    (let [value (extract-branch-text left?)]
+      (t.is (> (count value) 0)))))
+
+(t.deftest explicitly-cleaned-field-alias-moves-owner
+  (let [outer (make-direct-outer)
+        value outer.inner.text :defer-with delete-text]
+    (t.is (= value "nested-return"))))

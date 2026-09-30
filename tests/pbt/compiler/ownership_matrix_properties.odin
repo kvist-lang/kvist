@@ -48,6 +48,18 @@ OWNERSHIP_DUPLICATE_NAMES := [?]string{
 	"consuming-call",
 }
 
+Nested_Scalar_Transfer :: enum {
+	Return,
+	Alias,
+	Branch_Return,
+}
+
+NESTED_SCALAR_TRANSFER_NAMES := [?]string{
+	"nested-scalar-return",
+	"nested-scalar-alias",
+	"nested-scalar-branch-return",
+}
+
 multiple_owned_leaves_transfer_across_aggregate_boundaries :: proc(t: ^pbt.T) -> pbt.Result {
 	leaf_count := pbt.draw(t, pbt.int_range(2, 4))
 	destination := Ownership_Destination(pbt.draw(t, pbt.int_range(0, len(OWNERSHIP_DESTINATION_NAMES) - 1)))
@@ -624,6 +636,160 @@ direct_owned_struct_fields_match_cleanup_rules :: proc(t: ^pbt.T) -> pbt.Result 
 		return pbt.fail("direct owned struct field did not receive scoped cleanup")
 	}
 	return pbt.pass()
+}
+
+nested_owned_scalar_fields_preserve_transfer_cleanup :: proc(t: ^pbt.T) -> pbt.Result {
+	depth := pbt.draw(t, pbt.int_range(0, 3))
+	named := pbt.draw(t, pbt.boolean())
+	through_proc := pbt.draw(t, pbt.boolean())
+	transfer := Nested_Scalar_Transfer(pbt.draw(t, pbt.int_range(0, len(NESTED_SCALAR_TRANSFER_NAMES) - 1)))
+	for candidate in 0 ..= 3 {
+		pbt.cover(t, depth == candidate, 1, fmt.tprintf("nested-scalar-depth-%d", candidate))
+	}
+	pbt.cover(t, named, 2, "nested-scalar-named")
+	pbt.cover(t, !named, 2, "nested-scalar-positional")
+	pbt.cover(t, through_proc, 2, "nested-scalar-through-procedure")
+	pbt.cover(t, !through_proc, 2, "nested-scalar-direct-constructor")
+	for name, index in NESTED_SCALAR_TRANSFER_NAMES {
+		pbt.cover(t, int(transfer) == index, 2, name)
+	}
+
+	root_ty := "Leaf"
+	field_path := ".text"
+	declarations := "(defstruct Leaf [text: string])"
+	if depth == 1 {
+		root_ty = "Layer1"
+		field_path = ".child.text"
+		declarations = `(defstruct Leaf [text: string])
+(defstruct Layer1 [child: Leaf])`
+	} else if depth == 2 {
+		root_ty = "Layer2"
+		field_path = ".child.child.text"
+		declarations = `(defstruct Leaf [text: string])
+(defstruct Layer1 [child: Leaf])
+(defstruct Layer2 [child: Layer1])`
+	} else if depth == 3 {
+		root_ty = "Layer3"
+		field_path = ".child.child.child.text"
+		declarations = `(defstruct Leaf [text: string])
+(defstruct Layer1 [child: Leaf])
+(defstruct Layer2 [child: Layer1])
+(defstruct Layer3 [child: Layer2])`
+	}
+
+	constructor_left := nested_scalar_constructor_text(depth, named, `(clone-string "left")`)
+	constructor_right := nested_scalar_constructor_text(depth, named, `(clone-string "right")`)
+	maker := ""
+	left_value := constructor_left
+	right_value := constructor_right
+	if through_proc {
+		maker_constructor := nested_scalar_constructor_text(depth, named, `(clone-string source)`)
+		maker = fmt.tprintf(
+			"(defn make-owned [source: string] -> %s\n  %s)\n",
+			root_ty,
+			maker_constructor,
+		)
+		left_value = `(make-owned "left")`
+		right_value = `(make-owned "right")`
+	}
+
+	body := ""
+	switch transfer {
+	case .Return:
+		body = fmt.tprintf(
+			"(defn extract [] -> string\n  (let [owned %s]\n    owned%s))\n\n(defn exercise [] -> int\n  (let [value (extract)]\n    (count value)))",
+			left_value,
+			field_path,
+		)
+	case .Alias:
+		body = fmt.tprintf(
+			"(defn exercise [] -> int\n  (let [owned %s\n        moved owned%s :defer-with delete-text]\n    (count moved)))",
+			left_value,
+			field_path,
+		)
+	case .Branch_Return:
+		body = fmt.tprintf(
+			"(defn extract [left?: bool] -> string\n  (let [left %s\n        right %s]\n    (if left? left%s right%s)))\n\n(defn exercise [] -> int\n  (let [value (extract true)]\n    (count value)))",
+			left_value,
+			right_value,
+			field_path,
+			field_path,
+		)
+	}
+	source := fmt.tprintf(`(package app)
+(import strings "core:strings")
+
+%s
+
+(defn clone-string [value: string] -> string
+  (let [[result error] (strings.clone value)]
+    (assert (= error nil))
+    result))
+
+(defn delete-text [value: string]
+  (delete value))
+
+%s
+%s`, declarations, maker, body)
+	pbt.note(t, fmt.tprintf(
+		"depth=%d named=%t through-proc=%t transfer=%s\n%s",
+		depth,
+		named,
+		through_proc,
+		NESTED_SCALAR_TRANSFER_NAMES[transfer],
+		source,
+	))
+	result, compile_error, ok := kvist.compile_source_with_map(source)
+	if !ok {
+		defer kvist.compile_error_delete(&compile_error)
+		return pbt.fail(fmt.tprintf("generated nested scalar transfer did not compile: %s", compile_error.message))
+	}
+	defer delete(result.output)
+	defer kvist.source_map_slice_delete(result.source_map)
+	defer kvist.compile_warning_slice_delete(result.warnings)
+	if len(result.warnings) != 0 {
+		return pbt.fail(fmt.tprintf("generated nested scalar transfer emitted warning: %s", result.warnings[0].message))
+	}
+	switch transfer {
+	case .Return:
+		if !strings.contains(result.output, "delete(kvist_place^)") {
+			return pbt.fail("nested scalar return did not install caller cleanup")
+		}
+	case .Alias:
+		if !strings.contains(result.output, "defer delete_text(moved)") ||
+		   strings.contains(result.output, fmt.tprintf("defer delete(owned%s)", field_path)) {
+			return pbt.fail("nested scalar alias did not move cleanup to the alias")
+		}
+	case .Branch_Return:
+		if !strings.contains(result.output, fmt.tprintf("delete(left%s)", field_path)) ||
+		   !strings.contains(result.output, fmt.tprintf("delete(right%s)", field_path)) ||
+		   !strings.contains(result.output, "delete(kvist_place^)") {
+			return pbt.fail("nested scalar branch return did not clean the unselected owner and the caller result")
+		}
+	}
+	return pbt.pass()
+}
+
+nested_scalar_constructor_text :: proc(
+	depth: int,
+	named: bool,
+	value: string,
+) -> string {
+	builder := strings.builder_make()
+	defer strings.builder_destroy(&builder)
+	for layer := depth; layer >= 1; layer -= 1 {
+		fmt.sbprintf(
+			&builder,
+			"(Layer%d %s",
+			layer,
+			":child " if named else "",
+		)
+	}
+	fmt.sbprintf(&builder, "(Leaf %s%s)", ":text " if named else "", value)
+	for _ in 0 ..< depth {
+		strings.write_byte(&builder, ')')
+	}
+	return strings.clone(strings.to_string(builder))
 }
 
 write_multiple_leaf_prelude :: proc(

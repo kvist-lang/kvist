@@ -19,6 +19,13 @@ procedure_ownership_contract_detail :: proc(
         strings.write_string(&builder, "lifetime=result-borrowed")
         first = false
     }
+    if contract.result_uncertain {
+        if !first {
+            strings.write_byte(&builder, ';')
+        }
+        strings.write_string(&builder, "result=uncertain")
+        first = false
+    }
     for field_index in contract.owned_result_fields {
         if !first {
             strings.write_byte(&builder, ';')
@@ -104,6 +111,8 @@ lifetimes_write_proc :: proc(
             strings.write_string(builder, "  result: owned; every inferred return path produces a new value\n")
         } else if borrowed_result {
             strings.write_string(builder, "  result: borrowed; the return aliases an input or a known foreign view\n")
+        } else if contract.result_uncertain {
+            strings.write_string(builder, "  result: uncertain across return paths; automatic caller cleanup is not inserted\n")
         } else {
             strings.write_string(builder, "  result: explicit/unknown; Kvist does not infer transfer at this boundary\n")
         }
