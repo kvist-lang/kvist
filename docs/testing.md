@@ -303,6 +303,26 @@ branch types, non-assignable mutation targets, removed forms, and statements in
 expression position. Every rejection must retain its diagnostic category and
 an in-bounds span attributed to the generated eval source.
 
+Ownership-specific compiler properties generate one- to four-level aggregate
+chains with both named and positional struct constructors. They verify that an
+owned string leaf is transferred through every intermediate aggregate without
+retaining automatic cleanup. A second property generates returned structs made
+only from booleans, enums, and integers across early-return, mutation, and
+branch-result shapes, and requires both compiler warnings and `kvist lifetimes`
+to remain free of ownership uncertainty. Run only these fast frontend checks
+with:
+
+```sh
+./scripts/test_pbt_compiler.sh --tag ownership --num-tests 50 --text
+```
+
+CI runs this ownership subset on every push to `main` and every pull request.
+It also executes
+`examples/coverage/packages/ownership-transfer-tests.kvist` with memory
+tracking and the ownership audit so generated-code cleanup is checked at
+runtime. The complete compiler property suite remains available through the
+manual CI trigger.
+
 ## Examples
 
 - [examples/packages/testing.kvist](../examples/packages/testing.kvist) - small

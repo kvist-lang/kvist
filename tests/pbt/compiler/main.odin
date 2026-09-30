@@ -9,6 +9,7 @@ import pbt "pbt:pbt"
 
 COMPILER_EXPRESSION_TAGS := [?]string{"compiler", "expression", "model", "external", "slow"}
 COMPILER_DIAGNOSTIC_TAGS := [?]string{"compiler", "diagnostic", "invalid", "model"}
+COMPILER_OWNERSHIP_TAGS := [?]string{"compiler", "ownership", "aggregate", "diagnostic"}
 COMPILER_PROCESS_TIMEOUT_MS :: 120_000
 
 Compiler_Expression_Stats :: struct {
@@ -494,6 +495,18 @@ main :: proc() {
 			property = generated_invalid_compiler_expressions_have_bounded_diagnostics,
 			description = "generated invalid arities, types, mutations, and removed forms are rejected with category-specific eval diagnostics and bounded spans",
 			tags = COMPILER_DIAGNOSTIC_TAGS[:],
+		},
+		{
+			name = "nested owned aggregate transfers preserve the final owner",
+			property = nested_owned_aggregate_transfers_preserve_the_final_owner,
+			description = "generated named and positional struct chains transfer owned leaves through every intermediate aggregate without retaining automatic cleanup",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
+		{
+			name = "plain-data aggregate results stay ownership-certain",
+			property = plain_data_aggregate_results_stay_ownership_certain,
+			description = "generated aggregate results containing only booleans, enums, and integers never emit ownership uncertainty across returns or mutations",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
 		},
 	}
 	pbt.run_cli(properties[:], os.args[1:], {

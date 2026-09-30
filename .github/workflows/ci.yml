@@ -1,6 +1,10 @@
 name: CI
 
 on:
+  push:
+    branches:
+      - main
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -56,8 +60,15 @@ jobs:
           KVIST_PBT_ROOT: ${{ github.workspace }}/.tooling/pbt
         run: scripts/test_pbt.sh --text
 
-      - name: Run compiler property tests
+      - name: Run ownership compiler property tests
         if: runner.os == 'Linux'
+        shell: bash
+        env:
+          KVIST_PBT_ROOT: ${{ github.workspace }}/.tooling/pbt
+        run: scripts/test_pbt_compiler.sh --tag ownership --num-tests 50 --text
+
+      - name: Run full compiler property tests
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           KVIST_PBT_ROOT: ${{ github.workspace }}/.tooling/pbt
@@ -71,6 +82,11 @@ jobs:
       - name: Build CLI
         shell: bash
         run: odin build src/cli/kvist -out:./kvist${{ matrix.exe_suffix }}
+
+      - name: Test ownership runtime invariants
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./kvist test examples/coverage/packages/ownership-transfer-tests.kvist --track-memory --ownership-audit
 
       - name: Smoke test CLI
         shell: bash

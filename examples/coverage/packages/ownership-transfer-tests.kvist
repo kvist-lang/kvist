@@ -1,0 +1,38 @@
+(package tests)
+
+(import strings "core:strings")
+(import t "kvist:test")
+
+(defstruct Owned-Value [value: string])
+(defstruct Link [observed: Owned-Value])
+(defstruct Envelope [link: Link])
+
+(defn- clone-owned [value: string] -> Owned-Value
+  (let [[result error] (strings.clone value)]
+    (assert (= error nil))
+    (Owned-Value :value result)))
+
+(defn- delete-links [links: [dynamic]Link]
+  (for [link links]
+    (delete link.observed.value))
+  (delete links))
+
+(defn- delete-envelopes [envelopes: [dynamic]Envelope]
+  (for [envelope envelopes]
+    (delete envelope.link.observed.value))
+  (delete envelopes))
+
+(t.deftest named-owned-field-moves-through-struct-into-array
+  (let [owned (clone-owned "named")
+        link (Link :observed owned)
+        links (make [dynamic]Link) :defer-with delete-links]
+    (append (addr links) link)
+    (t.is (= links[0].observed.value "named"))))
+
+(t.deftest positional-owned-field-moves-through-two-structs-into-array
+  (let [owned (clone-owned "positional")
+        link (Link owned)
+        envelope (Envelope link)
+        envelopes (make [dynamic]Envelope) :defer-with delete-envelopes]
+    (append (addr envelopes) envelope)
+    (t.is (= envelopes[0].link.observed.value "positional"))))
