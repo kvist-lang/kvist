@@ -4238,6 +4238,65 @@ direct_owned_struct_fields_are_cleaned_and_overwrites_are_diagnosed :: proc(
 }
 
 @(test)
+mixed_local_struct_field_ownership_emits_precise_kvo008 :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defstruct Owned [text: string])
+
+(defn clone-string [value: string] -> string
+  (let [[result error] (strings.clone value)]
+    (assert (= error nil))
+    result))
+
+(defn use [owned?: bool] -> int
+  (let [value (Owned :text (if owned? (clone-string "owned") "borrowed"))]
+    (count value.text)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 1)
+    if len(result.warnings) == 1 {
+        testing.expect_value(
+            t,
+            result.warnings[0].code,
+            kvist.Compile_Warning_Code.Ownership_Automatic_Cleanup_Skipped,
+        )
+        testing.expect_value(
+            t,
+            result.warnings[0].confidence,
+            kvist.Compile_Warning_Confidence.Conservative,
+        )
+        testing.expect_value(
+            t,
+            strings.contains(result.warnings[0].message, "`value.text`"),
+            true,
+        )
+        warning_span := result.warnings[0].span
+        testing.expect(
+            t,
+            warning_span.start >= 0 && warning_span.end <= len(source),
+        )
+        if warning_span.start >= 0 && warning_span.end <= len(source) {
+            testing.expect_value(
+                t,
+                source[warning_span.start:warning_span.end],
+                `(if owned? (clone-string "owned") "borrowed")`,
+            )
+        }
+    }
+}
+
+@(test)
 warn_when_direct_field_result_ownership_differs_by_branch :: proc(
     t: ^testing.T,
 ) {

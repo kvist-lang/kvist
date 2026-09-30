@@ -35,6 +35,17 @@ emit_ownership_plan_diagnostics :: proc(
                 .Ownership_Automatic_Cleanup_Skipped,
                 .Conservative,
             )
+        case .Aggregate_Field_Ownership_Uncertain:
+            emit_coded_warning(
+                e,
+                fmt.tprintf(
+                    "ownership of aggregate field `%s` differs across branches; make every branch consistently owned or borrowed, or clean up the owned branch explicitly",
+                    diagnostic.subject,
+                ),
+                diagnostic.span,
+                .Ownership_Automatic_Cleanup_Skipped,
+                .Conservative,
+            )
         case .Explicit_Aggregate_Cleanup_Conditional:
             emit_coded_warning(
                 e,

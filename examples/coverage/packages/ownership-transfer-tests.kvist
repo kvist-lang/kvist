@@ -71,6 +71,9 @@
     :inner (Direct-Inner :text (clone-text "nested-return"))
     :marker 5))
 
+(defn- consume-direct-outer [value: Direct-Outer]
+  (delete value.inner.text))
+
 (t.deftest named-owned-field-moves-through-struct-into-array
   (let [owned (clone-owned "named")
         link (Link :observed owned)
@@ -160,3 +163,23 @@
 (t.deftest returned-direct-nested-owned-field-is-cleaned
   (let [outer (make-direct-outer)]
     (t.is (= outer.inner.text "nested-return"))))
+
+(t.deftest nested-owned-field-transfers-to-consuming-parameter
+  (let [outer (make-direct-outer)]
+    (consume-direct-outer outer)
+    (t.is true)))
+
+(t.deftest deleted-owned-field-can-be-reassigned
+  (let [owned (Owned-Value :value (clone-text "old"))]
+    (delete owned.value)
+    (set! owned.value (clone-text "new"))
+    (t.is (= owned.value "new"))))
+
+(t.deftest conditionally-reassigned-owned-field-restores-owner-flag
+  (for [replace? ([2]bool [false true])]
+    (let [owned (Owned-Value :value (clone-text "old"))]
+      (delete owned.value)
+      (if replace?
+        (set! owned.value (clone-text "new"))
+        (discard 0))
+      (t.is true))))

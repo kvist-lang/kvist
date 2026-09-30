@@ -25,6 +25,7 @@ Ownership_IR_Shadow_Place :: struct {
     ty:                       string,
     aggregate_root:           string,
     aggregate_cleanup_unsupported: bool,
+    aggregate_cleanup_reassign_only: bool,
     aggregate_return_transfers_owner: bool,
     cleanup_head:             string,
     activation:               Ownership_Activation,
@@ -1200,7 +1201,7 @@ ownership_ir_add_struct_field_place :: proc(
             body,
             place_name,
         )
-    cleanup_unsupported := aggregate_return_transfers_owner ||
+    cleanup_unsupported_without_reassign := aggregate_return_transfers_owner ||
         body_deletes_or_returns_name(
             lowering.emitter,
             body,
@@ -1208,9 +1209,11 @@ ownership_ir_add_struct_field_place :: proc(
             true,
         ) ||
         body_assigns_name(body, binding.name) ||
-        body_assigns_name(body, place_name) ||
         body_contains_result_capture(body, binding.name) ||
         body_contains_result_capture(body, place_name)
+    field_reassigned := body_assigns_name(body, place_name)
+    cleanup_unsupported := cleanup_unsupported_without_reassign ||
+                           field_reassigned
     place := ownership_ir_add_shadow_place(
         lowering,
         place_name,
@@ -1227,6 +1230,8 @@ ownership_ir_add_struct_field_place :: proc(
     )
     lowering.result.places[place].aggregate_return_transfers_owner =
         aggregate_return_transfers_owner
+    lowering.result.places[place].aggregate_cleanup_reassign_only =
+        field_reassigned && !cleanup_unsupported_without_reassign
     append(scope_places, place)
     return place, true
 }
@@ -1599,8 +1604,7 @@ ownership_ir_add_aggregate_cleanup_events :: proc(
                 continue
             }
             field_name := place.name[len(prefix):]
-            if strings.contains(field_name, ".") ||
-               !procedure_may_clean_parameter_field(
+            if !procedure_may_clean_parameter_field(
                    called_proc,
                    parameter_index,
                    field_name,
@@ -1659,6 +1663,31 @@ ownership_ir_form_produces_owned_value :: proc(
     return false
 }
 
+ownership_ir_form_owned_value_is_uncertain :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+) -> bool {
+    if form.kind != .List || len(form.items) == 0 ||
+       form.items[0].kind != .Symbol {
+        return false
+    }
+    head := form.items[0].text
+    if head == "if" && len(form.items) == 4 {
+        then_owned := ownership_ir_form_produces_owned_value(e, form.items[2])
+        else_owned := ownership_ir_form_produces_owned_value(e, form.items[3])
+        return then_owned != else_owned ||
+               ownership_ir_form_owned_value_is_uncertain(e, form.items[2]) ||
+               ownership_ir_form_owned_value_is_uncertain(e, form.items[3])
+    }
+    if head == "do" && len(form.items) >= 2 {
+        return ownership_ir_form_owned_value_is_uncertain(
+            e,
+            form.items[len(form.items)-1],
+        )
+    }
+    return false
+}
+
 ownership_ir_acquire_owned_struct_arg :: proc(
     lowering: ^Ownership_IR_Lowering,
     form: CST_Form,
@@ -1669,18 +1698,35 @@ ownership_ir_acquire_owned_struct_arg :: proc(
     body: []CST_Form,
     block: int,
 ) {
-    if !ownership_ir_form_produces_owned_value(
-        lowering.emitter,
-        value,
-    ) {
-        return
-    }
     field, ok_field := ownership_ir_struct_field_for_call_arg(
         lowering.emitter,
         form,
         item_index,
     )
     if !ok_field {
+        return
+    }
+    if binding.name != "" &&
+       ownership_ir_form_owned_value_is_uncertain(
+        lowering.emitter,
+        value,
+    ) {
+        subject := fmt.tprintf("%s.%s", binding.name, field.name)
+        append(
+            &lowering.result.diagnostic_candidates,
+            Ownership_IR_Diagnostic_Fact{
+                kind = .Aggregate_Field_Ownership_Uncertain,
+                certainty = .Conservative,
+                subject = subject,
+                span = value.span,
+            },
+        )
+        return
+    }
+    if !ownership_ir_form_produces_owned_value(
+        lowering.emitter,
+        value,
+    ) {
         return
     }
     place, ok_place := ownership_ir_struct_field_store_place(
@@ -3242,6 +3288,7 @@ ownership_ir_plan_proc :: proc(
 ) -> (Ownership_IR_Shadow_Proc, Ownership_IR_Cleanup_Plan) {
     shadow := ownership_ir_lower_proc(e, decl)
     analysis := ownership_ir_analyze(shadow.graph)
+    ownership_ir_enable_safe_aggregate_reassign_cleanup(&shadow, analysis)
     plan := ownership_ir_build_cleanup_plan(shadow, analysis)
     needs_value_liveness := false
     for place in shadow.places {
@@ -3269,6 +3316,55 @@ ownership_ir_plan_proc :: proc(
     ownership_ir_borrow_analysis_delete(&borrow_analysis)
     ownership_ir_analysis_delete(&analysis)
     return shadow, plan
+}
+
+ownership_ir_reassignments_start_dead :: proc(
+    result: Ownership_IR_Shadow_Proc,
+    analysis: Ownership_IR_Analysis,
+    place: int,
+) -> bool {
+    found := false
+    for block, block_index in result.graph.blocks {
+        if block_index >= len(analysis.blocks) ||
+           !analysis.blocks[block_index].reachable {
+            continue
+        }
+        facts: [dynamic]Ownership_IR_Live_Fact
+        ownership_ir_copy_facts(&facts, analysis.blocks[block_index].entry[:])
+        valid := true
+        for event in block.events {
+            if event.kind == .Reassign && event.place == place {
+                found = true
+                if place < 0 || place >= len(facts) ||
+                   facts[place].may_live {
+                    delete(facts)
+                    return false
+                }
+            }
+            ownership_ir_apply_event(event, &facts, &valid)
+        }
+        delete(facts)
+        if !valid {
+            return false
+        }
+    }
+    return found
+}
+
+ownership_ir_enable_safe_aggregate_reassign_cleanup :: proc(
+    result: ^Ownership_IR_Shadow_Proc,
+    analysis: Ownership_IR_Analysis,
+) {
+    if result == nil || !analysis.valid || !analysis.converged {
+        return
+    }
+    for &place in result.places {
+        if !place.aggregate_cleanup_reassign_only ||
+           !ownership_ir_reassignments_start_dead(result^, analysis, place.place) {
+            continue
+        }
+        place.aggregate_cleanup_unsupported = false
+    }
 }
 
 ownership_ir_event_requires_live_value :: proc(
@@ -4464,6 +4560,26 @@ ownership_ir_emit_active_destroy_updates :: proc(
     }
 }
 
+ownership_ir_emit_active_reassign_update :: proc(
+    e: ^Emitter,
+    place: CST_Form,
+) {
+    if e == nil || place.kind != .Symbol {
+        return
+    }
+    name := map_name(place.text)
+    defer delete(name)
+    owner_flag, found := ownership_ir_active_event_owner_flag(
+        e,
+        name,
+        place.span,
+        .Reassign,
+    )
+    if found {
+        emit_line_mapped(e, fmt.tprintf("%s = true", owner_flag), place.span)
+    }
+}
+
 ownership_ir_active_edge_has_cleanup :: proc(
     e: ^Emitter,
     span: Span,
@@ -4656,6 +4772,7 @@ ownership_ir_run_shadow :: proc(e: ^Emitter) -> Ownership_IR_Shadow_Stats {
         stats.procedures += 1
         shadow := ownership_ir_lower_proc(e, &decl.proc_decl)
         analysis := ownership_ir_analyze(shadow.graph)
+        ownership_ir_enable_safe_aggregate_reassign_cleanup(&shadow, analysis)
         plan := ownership_ir_build_cleanup_plan(shadow, analysis)
         if !plan.valid {
             stats.invalid += 1
@@ -4750,6 +4867,7 @@ ownership_ir_shadow_source :: proc(
                 span = decl.span,
             }, false
         }
+        ownership_ir_enable_safe_aggregate_reassign_cleanup(&shadow, analysis)
         plan := ownership_ir_build_cleanup_plan(shadow, analysis)
         if !plan.valid {
             ownership_ir_cleanup_plan_delete(&plan)

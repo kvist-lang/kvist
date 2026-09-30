@@ -148,7 +148,7 @@ cleanup_arg_names_direct_field :: proc(
 ) -> bool {
     target, fields, _, ok := field_path_place_parts(form)
     defer delete(fields)
-    if !ok || len(fields) != 1 || target.kind != .Symbol {
+    if !ok || len(fields) == 0 || target.kind != .Symbol {
         return false
     }
     root := target.text
@@ -159,7 +159,9 @@ cleanup_arg_names_direct_field :: proc(
     defer delete(mapped_root)
     mapped_parameter := map_name(parameter_name)
     defer delete(mapped_parameter)
-    return mapped_root == mapped_parameter && fields[0] == field_name
+    path := field_path_text(fields[:])
+    defer delete(path)
+    return mapped_root == mapped_parameter && path == field_name
 }
 
 form_may_clean_parameter_field :: proc(

@@ -547,7 +547,7 @@ main :: proc() {
 		{
 			name = "direct owned struct fields match cleanup rules",
 			property = direct_owned_struct_fields_match_cleanup_rules,
-			description = "direct and conditional owned calls in struct fields receive scoped cleanup and definite overwrite diagnostics",
+			description = "direct and conditional owned calls in nested struct fields receive scoped cleanup, safe reassignment after delete, and definite unsafe-overwrite diagnostics",
 			tags = COMPILER_OWNERSHIP_TAGS[:],
 		},
 	}

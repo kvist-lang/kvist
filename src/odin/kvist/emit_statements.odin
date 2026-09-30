@@ -1779,6 +1779,7 @@ emit_stmt :: proc(
             moves_tracked_local,
         ); managed {
             emit_prefixed_expr_mapped(e, "", assignment, form.span)
+            ownership_ir_emit_active_reassign_update(e, form.items[1])
             return {}, true
         }
         emit_indent(e)
@@ -1788,6 +1789,7 @@ emit_stmt :: proc(
         strings.write_string(&e.builder, rhs)
         record_current_line_fragment_map(e, len(lhs) + len(" = "), rhs, form.items[2].span)
         emit_raw_newline(e)
+        ownership_ir_emit_active_reassign_update(e, form.items[1])
         return {}, true
     case "loop":
         return Compile_Error{message = "`loop` has been removed; use `for` for collection iteration or `while` for condition loops", span = form.span}, false

@@ -481,15 +481,16 @@ owned_scalar_payloads_transfer_into_unions :: proc(t: ^pbt.T) -> pbt.Result {
 direct_owned_struct_fields_match_cleanup_rules :: proc(t: ^pbt.T) -> pbt.Result {
 	named := pbt.draw(t, pbt.boolean())
 	conditional := pbt.draw(t, pbt.boolean())
-	overwrite := pbt.draw(t, pbt.boolean())
+	overwrite_mode := pbt.draw(t, pbt.int_range(0, 2))
 	depth := pbt.draw(t, pbt.int_range(0, 2))
 	through_proc := pbt.draw(t, pbt.boolean())
 	pbt.cover(t, named, 2, "named-owned-field")
 	pbt.cover(t, !named, 2, "positional-owned-field")
 	pbt.cover(t, conditional, 2, "conditional-owned-field-value")
 	pbt.cover(t, !conditional, 2, "direct-owned-field-value")
-	pbt.cover(t, overwrite, 2, "owned-field-overwrite")
-	pbt.cover(t, !overwrite, 2, "owned-field-scope-cleanup")
+	pbt.cover(t, overwrite_mode == 0, 2, "owned-field-scope-cleanup")
+	pbt.cover(t, overwrite_mode == 1, 2, "owned-field-unsafe-overwrite")
+	pbt.cover(t, overwrite_mode == 2, 2, "owned-field-delete-then-reassign")
 	for candidate in 0 ..= 2 {
 		pbt.cover(t, depth == candidate, 1, fmt.tprintf("direct-field-depth-%d", candidate))
 	}
@@ -568,10 +569,17 @@ direct_owned_struct_fields_match_cleanup_rules :: proc(t: ^pbt.T) -> pbt.Result 
 		maker,
 		binding_value,
 	)
-	if overwrite {
+	if overwrite_mode == 1 {
 		fmt.sbprintf(
 			&source_builder,
 			"(set! owned%s (clone-string \"replacement\"))",
+			field_path,
+		)
+	} else if overwrite_mode == 2 {
+		fmt.sbprintf(
+			&source_builder,
+			"(delete owned%s)\n    (set! owned%s (clone-string \"replacement\"))",
+			field_path,
 			field_path,
 		)
 	} else {
@@ -584,10 +592,10 @@ direct_owned_struct_fields_match_cleanup_rules :: proc(t: ^pbt.T) -> pbt.Result 
 	)
 	source := strings.to_string(source_builder)
 	pbt.note(t, fmt.tprintf(
-		"named=%t conditional=%t overwrite=%t depth=%d through-proc=%t\n%s",
+		"named=%t conditional=%t overwrite-mode=%d depth=%d through-proc=%t\n%s",
 		named,
 		conditional,
-		overwrite,
+		overwrite_mode,
 		depth,
 		through_proc,
 		source,
@@ -600,7 +608,7 @@ direct_owned_struct_fields_match_cleanup_rules :: proc(t: ^pbt.T) -> pbt.Result 
 	defer delete(result.output)
 	defer kvist.source_map_slice_delete(result.source_map)
 	defer kvist.compile_warning_slice_delete(result.warnings)
-	if overwrite {
+	if overwrite_mode == 1 {
 		for warning in result.warnings {
 			if warning.code == .Ownership_Overwrite &&
 			   warning.confidence == .Definite {
