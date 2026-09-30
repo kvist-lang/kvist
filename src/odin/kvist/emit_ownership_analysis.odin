@@ -1485,6 +1485,16 @@ proc_decl_infer_owned_result_fields :: proc(
     if !ok_struct || len(proc_decl.body) == 0 {
         return fields, false, uncertain
     }
+    has_ownership_relevant_field := false
+    for field in return_struct.fields {
+        if type_supports_automatic_native_delete(field.ty) {
+            has_ownership_relevant_field = true
+            break
+        }
+    }
+    if !has_ownership_relevant_field {
+        return fields, true, false
+    }
     owned_names: [dynamic]string
     defer delete(owned_names)
     for param in proc_decl.params {

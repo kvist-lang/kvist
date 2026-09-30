@@ -190,6 +190,105 @@ owned_structs_returned_inside_fixed_array_transfer_their_fields :: proc(t: ^test
 }
 
 @(test)
+nested_owned_struct_stored_in_managed_struct_transfers_the_source :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defstruct Optional-String [value: string present?: bool])
+(defstruct Link [observed-name: Optional-String])
+
+(defn copy-string [value: string] -> string
+  (let [[result error] (strings.clone value)]
+    (assert (= error nil))
+    result))
+
+(defn clone-optional-string [value: Optional-String] -> Optional-String
+  (Optional-String
+    :value (copy-string value.value)
+    :present? value.present?))
+
+(defn delete-links [links: [dynamic]Link]
+  (for [link links]
+    (delete link.observed-name.value))
+  (delete links))
+
+(defn use [] -> int
+  (let [source (Optional-String :value "example" :present? true)
+        links (make [dynamic]Link) :defer-with delete-links
+        observed-name (clone-optional-string source)
+        link (Link :observed-name observed-name)]
+    (append (addr links) link)
+    (count links)))`
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(
+        t,
+        strings.contains(output, "defer delete(observed_name.value)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(output, "Link{observed_name = observed_name}"),
+        true,
+    )
+}
+
+@(test)
+pod_struct_result_does_not_report_uncertain_owned_fields :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+
+(defenum Phase [unknown ready])
+(defstruct Summary [ok?: bool phase: Phase count: int])
+
+(defn summarize [ready?: bool] -> Summary
+  (if ready?
+    (return (Summary :ok? true :phase Phase.ready :count 1))
+    (println "not ready"))
+  (Summary :ok? false :phase Phase.unknown :count 0))
+
+(defn use [] -> int
+  (let [summary (summarize true)]
+    summary.count))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    lifetimes, lifetimes_err, lifetimes_ok := kvist.lifetimes_source(source)
+    testing.expect_value(t, lifetimes_ok, true)
+    if lifetimes_ok {
+        defer delete(lifetimes)
+        testing.expect_value(
+            t,
+            strings.contains(
+                lifetimes,
+                "uncertain across returns or mutations",
+            ),
+            false,
+        )
+    } else {
+        defer kvist.compile_error_delete(&lifetimes_err)
+        testing.expect_value(t, lifetimes_err.message, "")
+    }
+}
+
+@(test)
 owned_argument_forwarded_into_struct_result_is_not_cleaned_at_call_site :: proc(
     t: ^testing.T,
 ) {

@@ -1198,6 +1198,36 @@ ownership_ir_call_has_tracked_aggregate_arg :: proc(
     return false
 }
 
+ownership_ir_store_tracked_aggregate :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    form: CST_Form,
+    block: int,
+) {
+    root, ok_root := ownership_ir_cleanup_arg_root_name(form)
+    if !ok_root {
+        return
+    }
+    defer delete(root)
+    prefix := fmt.tprintf("%s.", root)
+    defer delete(prefix)
+    for place in lowering.result.places {
+        if place.aggregate_root != root ||
+           !strings.has_prefix(place.name, prefix) {
+            continue
+        }
+        _ = ownership_ir_add_event(
+            &lowering.result.graph,
+            block,
+            {
+                kind = .Store,
+                place = place.place,
+                target = -1,
+                span = form.span,
+            },
+        )
+    }
+}
+
 ownership_ir_call_parameter_index :: proc(
     decl: ^Proc_Decl,
     args: []CST_Form,
@@ -1442,6 +1472,13 @@ ownership_ir_lower_call :: proc(
                 item.text,
             )
             if !found {
+                if struct_constructor {
+                    ownership_ir_store_tracked_aggregate(
+                        lowering,
+                        item,
+                        block,
+                    )
+                }
                 continue
             }
             event_kind := Ownership_IR_Event_Kind.Borrow
@@ -1628,6 +1665,13 @@ ownership_ir_lower_call :: proc(
         )
         place, found := ownership_ir_lookup_name(lowering, item.text)
         if !found {
+            if struct_constructor {
+                ownership_ir_store_tracked_aggregate(
+                    lowering,
+                    item,
+                    block,
+                )
+            }
             continue
         }
         event_kind := Ownership_IR_Event_Kind.Borrow
