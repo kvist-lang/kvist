@@ -6,6 +6,7 @@
 (defstruct Owned-Value [value: string])
 (defstruct Link [observed: Owned-Value])
 (defstruct Envelope [link: Link])
+(defstruct Owned-Pair [left: string right: string marker: int])
 
 (defn- clone-owned [value: string] -> Owned-Value
   (let [[result error] (strings.clone value)]
@@ -22,6 +23,12 @@
     (delete envelope.link.observed.value))
   (delete envelopes))
 
+(defn- delete-pairs [pairs: [dynamic]Owned-Pair]
+  (for [pair pairs]
+    (delete pair.left)
+    (delete pair.right))
+  (delete pairs))
+
 (t.deftest named-owned-field-moves-through-struct-into-array
   (let [owned (clone-owned "named")
         link (Link :observed owned)
@@ -36,3 +43,32 @@
         envelopes (make [dynamic]Envelope) :defer-with delete-envelopes]
     (append (addr envelopes) envelope)
     (t.is (= envelopes[0].link.observed.value "positional"))))
+
+(t.deftest multiple-owned-fields-move-together
+  (let [left (clone-owned "left")
+        right (clone-owned "right")
+        pair (Owned-Pair :left left.value :right right.value :marker 7)
+        pairs (make [dynamic]Owned-Pair) :defer-with delete-pairs]
+    (append (addr pairs) pair)
+    (t.is (= pairs[0].left "left"))
+    (t.is (= pairs[0].right "right"))))
+
+(t.deftest conditional-owned-aggregate-storage-moves-on-both-paths
+  (let [left (clone-owned "branch-left")
+        right (clone-owned "branch-right")
+        pair (Owned-Pair left.value right.value 1)
+        pairs (make [dynamic]Owned-Pair) :defer-with delete-pairs]
+    (if (= pair.marker 1)
+      (append (addr pairs) pair)
+      (append (addr pairs) pair))
+    (t.is (= (count pairs) 1))))
+
+(t.deftest loop-owned-aggregate-storage-moves-each-iteration
+  (let [pairs (make [dynamic]Owned-Pair) :defer-with delete-pairs]
+    (for [index ([3]int [0 1 2])]
+      (let [left (clone-owned "loop-left")
+            right (clone-owned "loop-right")
+            pair (Owned-Pair left.value right.value index)]
+        (append (addr pairs) pair)))
+    (t.is (= (count pairs) 3))
+    (t.is (= pairs[2].marker 2))))

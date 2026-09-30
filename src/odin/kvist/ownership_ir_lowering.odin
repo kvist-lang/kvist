@@ -607,27 +607,17 @@ ownership_ir_lower_binding :: proc(
     body: []CST_Form,
     block: int,
     scope_places: ^[dynamic]int,
-) {
+) -> int {
     // Binding values are evaluated before the new name enters scope. Lower
     // their ownership events against the already-active places.
-    if binding.value.kind == .List && len(binding.value.items) >= 3 &&
-       binding.value.items[0].kind == .Symbol &&
-       binding.value.items[0].text == "if" {
-        ownership_ir_lower_value_uses(
-            lowering,
-            binding.value,
-            block,
-        )
-    } else {
-        ownership_ir_lower_call(
-            lowering,
-            binding.value,
-            block,
-            binding,
-            scope_places,
-            body,
-        )
-    }
+    current_block := ownership_ir_lower_binding_value(
+        lowering,
+        binding.value,
+        binding,
+        scope_places,
+        body,
+        block,
+    )
     if proc_call_owned_result_fields_are_uncertain(
         lowering.emitter,
         binding.value,
@@ -661,7 +651,7 @@ ownership_ir_lower_binding :: proc(
             ); added {
                 _ = ownership_ir_add_event(
                     &lowering.result.graph,
-                    block,
+                    current_block,
                     {
                         kind = .Acquire,
                         place = place,
@@ -751,7 +741,7 @@ ownership_ir_lower_binding :: proc(
                 acquired_place = true
                 _ = ownership_ir_add_event(
                     &lowering.result.graph,
-                    block,
+                    current_block,
                     {
                         kind = .Acquire,
                         place = place,
@@ -761,9 +751,9 @@ ownership_ir_lower_binding :: proc(
                 )
             }
             if acquired_place {
-                ownership_ir_schedule_binding_cleanup(lowering, binding, block)
+                ownership_ir_schedule_binding_cleanup(lowering, binding, current_block)
             }
-            return
+            return current_block
         }
     }
 
@@ -810,14 +800,14 @@ ownership_ir_lower_binding :: proc(
             append(scope_places, place)
             _ = ownership_ir_add_event(
                 &lowering.result.graph,
-                block,
+                current_block,
                 {
                     kind = .Acquire,
                     place = place,
                     span = binding.value.span,
                 },
             )
-            ownership_ir_schedule_binding_cleanup(lowering, binding, block)
+            ownership_ir_schedule_binding_cleanup(lowering, binding, current_block)
         }
         borrow_place := ownership_ir_add_borrow_place(
             lowering,
@@ -828,12 +818,139 @@ ownership_ir_lower_binding :: proc(
             lowering,
             borrow_place,
             binding.value,
-            block,
+            current_block,
         )
         if binding.deferred_delete || binding.defer_with_cleanup {
             ownership_ir_lower_borrow_delete(
                 lowering,
                 binding.value,
+                current_block,
+            )
+        }
+    }
+    return current_block
+}
+
+ownership_ir_lower_binding_value :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    value: CST_Form,
+    binding: Binding,
+    scope_places: ^[dynamic]int,
+    body: []CST_Form,
+    block: int,
+) -> int {
+    // A typed sequence literal stores its elements. Record aggregate leaves as
+    // transferred too, so copying the same nested owner into another literal
+    // is diagnosed rather than silently aliasing it.
+    if value.kind == .List && len(value.items) == 2 &&
+       value.items[1].kind == .Vector {
+        if type_text, _, ok_type := parse_type_text(value.items[0]); ok_type {
+            delete(type_text)
+            ownership_ir_lower_owned_sequence_literal(
+                lowering,
+                value.items[1],
+                block,
+            )
+            return block
+        }
+    }
+    if value.kind != .List || len(value.items) < 3 ||
+       value.items[0].kind != .Symbol || value.items[0].text != "if" {
+        ownership_ir_lower_call(
+            lowering,
+            value,
+            block,
+            binding,
+            scope_places,
+            body,
+        )
+        return block
+    }
+
+    // Binding alternatives are mutually exclusive. Lower them into separate
+    // CFG blocks so an owner transferred by both alternatives is dead at the
+    // join without looking like two sequential transfers.
+    ownership_ir_lower_value_uses(lowering, value.items[1], block)
+    then_block := ownership_ir_add_block(&lowering.result.graph)
+    else_block := ownership_ir_add_block(&lowering.result.graph)
+    join_block := ownership_ir_add_block(&lowering.result.graph)
+    _ = ownership_ir_add_successor(&lowering.result.graph, block, then_block)
+    _ = ownership_ir_add_successor(&lowering.result.graph, block, else_block)
+    then_exit := ownership_ir_lower_binding_value(
+        lowering,
+        value.items[2],
+        binding,
+        scope_places,
+        body,
+        then_block,
+    )
+    if !ownership_ir_form_never_returns(lowering.emitter, value.items[2]) {
+        _ = ownership_ir_add_successor(
+            &lowering.result.graph,
+            then_exit,
+            join_block,
+        )
+    }
+    if len(value.items) >= 4 {
+        else_exit := ownership_ir_lower_binding_value(
+            lowering,
+            value.items[3],
+            binding,
+            scope_places,
+            body,
+            else_block,
+        )
+        if !ownership_ir_form_never_returns(lowering.emitter, value.items[3]) {
+            _ = ownership_ir_add_successor(
+                &lowering.result.graph,
+                else_exit,
+                join_block,
+            )
+        }
+    } else {
+        _ = ownership_ir_add_successor(
+            &lowering.result.graph,
+            else_block,
+            join_block,
+        )
+    }
+    return join_block
+}
+
+ownership_ir_lower_owned_sequence_literal :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    values: CST_Form,
+    block: int,
+) {
+    for value in values.items {
+        if value.kind != .Symbol {
+            ownership_ir_lower_value_uses(lowering, value, block)
+            continue
+        }
+        ownership_ir_lower_borrow_use(
+            lowering,
+            value.text,
+            block,
+            value.span,
+        )
+        if place, found := ownership_ir_lookup_name(
+            lowering,
+            value.text,
+        ); found {
+            _ = ownership_ir_add_event(
+                &lowering.result.graph,
+                block,
+                {
+                    kind = .Store,
+                    place = place,
+                    target = -1,
+                    span = value.span,
+                },
+            )
+        } else {
+            ownership_ir_store_tracked_aggregate(
+                lowering,
+                value,
                 block,
             )
         }
@@ -971,11 +1088,43 @@ ownership_ir_add_struct_field_place :: proc(
         field.ty,
         binding.name,
         cleanup_unsupported,
+        diagnose_use_after_transfer = true,
     )
     lowering.result.places[place].aggregate_return_transfers_owner =
         aggregate_return_transfers_owner
     append(scope_places, place)
     return place, true
+}
+
+ownership_ir_struct_field_store_place :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    binding: Binding,
+    field: Struct_Field,
+    scope_places: ^[dynamic]int,
+    body: []CST_Form,
+) -> (int, bool) {
+    // Both alternatives of a conditional constructor initialize the same
+    // destination field. Reuse that place, but never cross a shadowing
+    // boundary that happens to have the same mapped name.
+    if binding.name != "" && field.name != "" {
+        place_name := fmt.tprintf("%s.%s", binding.name, field.name)
+        defer delete(place_name)
+        if place, found := ownership_ir_lookup_name(
+            lowering,
+            place_name,
+        ); found && place >= 0 && place < len(lowering.result.places) &&
+           lowering.result.places[place].aggregate_root == binding.name &&
+           lowering.result.places[place].span == binding.target_span {
+            return place, true
+        }
+    }
+    return ownership_ir_add_struct_field_place(
+        lowering,
+        binding,
+        field,
+        scope_places,
+        body,
+    )
 }
 
 ownership_ir_add_aggregate_return_events :: proc(
@@ -1512,7 +1661,7 @@ ownership_ir_lower_call :: proc(
                             form,
                             item_index+1,
                         ); ok_struct_field {
-                        if target, ok_target := ownership_ir_add_struct_field_place(
+                        if target, ok_target := ownership_ir_struct_field_store_place(
                             lowering,
                             store_binding,
                             field^,
@@ -1735,7 +1884,7 @@ ownership_ir_lower_call :: proc(
                 form,
                 item_index+1,
             ); ok_field {
-                if target, ok_target := ownership_ir_add_struct_field_place(
+                if target, ok_target := ownership_ir_struct_field_store_place(
                     lowering,
                     store_binding,
                     field^,
@@ -2349,21 +2498,22 @@ ownership_ir_lower_form :: proc(
         borrow_start := len(lowering.borrows)
         scope_places: [dynamic]int
         defer delete(scope_places)
+        binding_block := block
         for binding, binding_index in bindings {
-            ownership_ir_lower_binding(
+            binding_block = ownership_ir_lower_binding(
                 lowering,
                 binding,
                 bindings[:],
                 binding_index,
                 form.items[2:],
-                block,
+                binding_block,
                 &scope_places,
             )
         }
         body_flow := ownership_ir_lower_forms(
             lowering,
             form.items[2:],
-            block,
+            binding_block,
             can_transfer,
         )
         result := Ownership_IR_Flow{}

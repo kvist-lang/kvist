@@ -508,6 +508,24 @@ main :: proc() {
 			description = "generated aggregate results containing only booleans, enums, and integers never emit ownership uncertainty across returns or mutations",
 			tags = COMPILER_OWNERSHIP_TAGS[:],
 		},
+		{
+			name = "multiple owned leaves transfer across aggregate boundaries",
+			property = multiple_owned_leaves_transfer_across_aggregate_boundaries,
+			description = "generated aggregates with several owned leaves transfer through returns, arrays, calls, and outer structs without duplicate cleanup",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
+		{
+			name = "owned aggregates transfer through branches and loops",
+			property = owned_aggregates_transfer_through_branches_and_loops,
+			description = "generated conditional construction, conditional storage, and repeated loop storage transfer every owned leaf exactly once",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
+		{
+			name = "duplicate ownership transfers are diagnosed",
+			property = duplicate_ownership_transfers_are_diagnosed,
+			description = "generated leaf and aggregate aliases cannot be transferred twice without a definite use-after-transfer diagnostic",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
 	}
 	pbt.run_cli(properties[:], os.args[1:], {
 		num_tests = 25,

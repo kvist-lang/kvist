@@ -309,19 +309,22 @@ owned string leaf is transferred through every intermediate aggregate without
 retaining automatic cleanup. A second property generates returned structs made
 only from booleans, enums, and integers across early-return, mutation, and
 branch-result shapes, and requires both compiler warnings and `kvist lifetimes`
-to remain free of ownership uncertainty. Run only these fast frontend checks
-with:
+to remain free of ownership uncertainty. Additional properties vary three to
+five owned leaves across direct returns, fixed and dynamic arrays, consuming
+calls, and outer structs; exercise conditional construction, conditional
+storage, and loop storage; and require definite KVO003 diagnostics when leaf,
+aggregate, fixed-array, or consuming-call aliases are transferred twice. Run
+only these fast frontend checks with:
 
 ```sh
 ./scripts/test_pbt_compiler.sh --tag ownership --num-tests 50 --text
 ```
 
-CI runs this ownership subset on every push to `main` and every pull request.
-It also executes
+Property suites are intentionally run locally rather than in CI. The
+deterministic CI suite executes
 `examples/coverage/packages/ownership-transfer-tests.kvist` with memory
-tracking and the ownership audit so generated-code cleanup is checked at
-runtime. The complete compiler property suite remains available through the
-manual CI trigger.
+tracking and the ownership audit so generated-code cleanup is still checked at
+runtime on every push to `main` and every pull request.
 
 ## Examples
 

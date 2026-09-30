@@ -289,6 +289,105 @@ pod_struct_result_does_not_report_uncertain_owned_fields :: proc(
 }
 
 @(test)
+conditional_struct_construction_transfers_owned_fields_on_either_path :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defstruct Payload [left: string right: string marker: int])
+
+(defn clone-string [value: string] -> string
+  (let [[result error] (strings.clone value)]
+    (assert (= error nil))
+    result))
+
+(defn delete-items [items: [dynamic]Payload]
+  (for [item items]
+    (delete item.left)
+    (delete item.right))
+  (delete items))
+
+(defn use [flag: bool] -> int
+  (let [left (clone-string "left")
+        right (clone-string "right")
+        payload (if flag
+          (Payload :left left :right right :marker 1)
+          (Payload :left left :right right :marker 2))
+        items (make [dynamic]Payload) :defer-with delete-items]
+    (append (addr items) payload)
+    (count items)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "defer delete(left)"), false)
+    testing.expect_value(t, strings.contains(result.output, "defer delete(right)"), false)
+    testing.expect_value(t, strings.contains(result.output, "defer delete(payload.left)"), false)
+    testing.expect_value(t, strings.contains(result.output, "defer delete(payload.right)"), false)
+}
+
+@(test)
+duplicate_nested_aggregate_and_fixed_array_transfers_are_diagnosed :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defstruct Leaf [text: string])
+(defstruct Outer [leaf: Leaf])
+
+(defn clone-string [value: string] -> string
+  (let [[result error] (strings.clone value)]
+    (assert (= error nil))
+    result))
+
+(defn duplicate-aggregate [] -> int
+  (let [owned (clone-string "aggregate")
+        leaf (Leaf :text owned)
+        first (Outer :leaf leaf)
+        second (Outer :leaf leaf)]
+    (+ (count first.leaf.text) (count second.leaf.text))))
+
+(defn duplicate-fixed-array [] -> int
+  (let [owned (clone-string "array")
+        leaf (Leaf :text owned)
+        first ([1]Leaf [leaf])
+        second ([1]Leaf [leaf])]
+    (+ (count first[0].text) (count second[0].text))))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 2)
+    for warning in result.warnings {
+        testing.expect_value(
+            t,
+            warning.code,
+            kvist.Compile_Warning_Code.Ownership_Use_After_Transfer,
+        )
+        testing.expect_value(
+            t,
+            warning.confidence,
+            kvist.Compile_Warning_Confidence.Definite,
+        )
+    }
+}
+
+@(test)
 owned_argument_forwarded_into_struct_result_is_not_cleaned_at_call_site :: proc(
     t: ^testing.T,
 ) {
@@ -2156,19 +2255,34 @@ warn_when_native_aggregate_field_cleanup_is_unsafe :: proc(t: ^testing.T) {
         strings.contains(result.output, "defer delete(box.data)"),
         false,
     )
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(
-            t,
-            result.warnings[0].message,
-            "automatic cleanup for owned result `data` was skipped because it is stored in an aggregate or mutable place; clean it up explicitly after its last use or transfer ownership",
-        )
-        testing.expect_value(
-            t,
-            result.warnings[0].code,
-            kvist.Compile_Warning_Code.Ownership_Automatic_Cleanup_Skipped,
-        )
+    testing.expect_value(t, len(result.warnings), 2)
+    cleanup_skipped := false
+    overwrite_diagnosed := false
+    for warning in result.warnings {
+        if warning.code == .Ownership_Automatic_Cleanup_Skipped {
+            cleanup_skipped = true
+            testing.expect_value(
+                t,
+                warning.message,
+                "automatic cleanup for owned result `data` was skipped because it is stored in an aggregate or mutable place; clean it up explicitly after its last use or transfer ownership",
+            )
+        }
+        if warning.code == .Ownership_Overwrite {
+            overwrite_diagnosed = true
+            testing.expect_value(
+                t,
+                warning.message,
+                "owned local box.data is overwritten before cleanup; delete it or return it before set!",
+            )
+            testing.expect_value(
+                t,
+                warning.confidence,
+                kvist.Compile_Warning_Confidence.Definite,
+            )
+        }
     }
+    testing.expect_value(t, cleanup_skipped, true)
+    testing.expect_value(t, overwrite_diagnosed, true)
 }
 
 @(test)
