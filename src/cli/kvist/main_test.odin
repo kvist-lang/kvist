@@ -713,3 +713,33 @@ repl_odin_build_retries_only_compiler_crashes :: proc(t: ^testing.T) {
         "Odin compiler terminated without diagnostics after single-thread retry (exit or signal code 11)",
     )
 }
+
+@(test)
+repl_odin_generation_build_handles_darwin_entrypoint_linking :: proc(
+    t: ^testing.T,
+) {
+    command := repl_odin_generation_build_command(
+        "/tmp/generation.odin",
+        "-out:/tmp/generation.dylib",
+        true,
+        true,
+    )
+    defer delete(command)
+
+    testing.expect_value(t, command[4], "-build-mode:dll")
+    testing.expect_value(t, command[5], "-o:none")
+    when ODIN_OS == .Darwin {
+        testing.expect_value(t, len(command), 9)
+        testing.expect_value(
+            t,
+            command[6],
+            "-extra-linker-flags:-Wl,-alias,__odin_entry_point,'__odin_entry_point'",
+        )
+        testing.expect_value(t, command[7], "-debug")
+        testing.expect_value(t, command[8], "-out:/tmp/generation.dylib")
+    } else {
+        testing.expect_value(t, len(command), 8)
+        testing.expect_value(t, command[6], "-debug")
+        testing.expect_value(t, command[7], "-out:/tmp/generation.dylib")
+    }
+}

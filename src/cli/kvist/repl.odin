@@ -9066,6 +9066,41 @@ repl_odin_build_failure_message :: proc(
     )
 }
 
+repl_odin_generation_build_command :: proc(
+    source_path,
+    output_arg: string,
+    fast_native_build,
+    native_debug_symbols: bool,
+) -> [dynamic]string {
+    command := make([dynamic]string, 0, 9)
+    args := [5]string{
+        "odin",
+        "build",
+        source_path,
+        "-file",
+        "-build-mode:dll",
+    }
+    append(&command, ..args[:])
+    if fast_native_build {
+        append(&command, "-o:none")
+    }
+    when ODIN_OS == .Darwin {
+        // Odin dev-2026-09 passes the apostrophes in
+        // -Wl,-init,'__odin_entry_point' through to ld as part of the symbol
+        // name. Preserve runtime initialization by aliasing that misspelled
+        // name to the entry point Odin emits. See odin-lang/Odin#7559.
+        append(
+            &command,
+            "-extra-linker-flags:-Wl,-alias,__odin_entry_point,'__odin_entry_point'",
+        )
+    }
+    if native_debug_symbols {
+        append(&command, "-debug")
+    }
+    append(&command, output_arg)
+    return command
+}
+
 repl_compile_generation :: proc(
     input,
     source,
@@ -9756,23 +9791,13 @@ repl_compile_generation :: proc(
 
     output_arg := strings.clone(fmt.tprintf("-out:%s", output_path))
     defer delete(output_arg)
-    args := [5]string{
-        "odin",
-        "build",
+    command := repl_odin_generation_build_command(
         source_path,
-        "-file",
-        "-build-mode:dll",
-    }
-    command := make([dynamic]string, 0, 8)
+        output_arg,
+        fast_native_build,
+        native_debug_symbols,
+    )
     defer delete(command)
-    append(&command, ..args[:])
-    if fast_native_build {
-        append(&command, "-o:none")
-    }
-    if native_debug_symbols {
-        append(&command, "-debug")
-    }
-    append(&command, output_arg)
     if timings != nil {
         timings.source_generation_ns =
             time.duration_nanoseconds(time.tick_since(source_generation_start))
