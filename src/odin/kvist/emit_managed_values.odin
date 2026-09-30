@@ -30,12 +30,22 @@ binding_delete_target_name :: proc(binding: Binding) -> (string, bool) {
     if binding.name != "" {
         return binding.name, true
     }
-    if binding.is_result_binding && len(binding.pattern) > 0 {
+    if (binding.is_result_binding || binding.is_destructure) && len(binding.pattern) > 0 {
         if binding.pattern[0] != "" {
             return binding.pattern[0], true
         }
     }
     return "", false
+}
+
+binding_has_explicit_cleanup_for_name :: proc(binding: Binding, name: string) -> bool {
+    if !binding.deferred_delete &&
+       !binding.err_deferred_delete &&
+       !binding.defer_with_cleanup {
+        return false
+    }
+    cleanup_name, ok := binding_delete_target_name(binding)
+    return ok && cleanup_name == name
 }
 
 emit_binding_deferred_delete :: proc(e: ^Emitter, binding: Binding) -> (Compile_Error, bool) {
@@ -1070,6 +1080,9 @@ emit_managed_destructure_cleanup :: proc(
         if name == "" {
             continue
         }
+        if binding_has_explicit_cleanup_for_name(binding, name) {
+            continue
+        }
         lifecycle, known := infer_result_lifecycle(
             e,
             binding.value,
@@ -1157,6 +1170,7 @@ emit_managed_destructure_cleanup :: proc(
     }
     for name, idx in binding.pattern {
         if name != "" &&
+           !binding_has_explicit_cleanup_for_name(binding, name) &&
            type_text_has_managed_lifecycle(e, proc_decl.returns.named[idx].ty) &&
            !body_deletes_name(body, name) {
             emit_line(e, fmt.tprintf(

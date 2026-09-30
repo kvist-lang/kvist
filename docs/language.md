@@ -1703,8 +1703,19 @@ Cleanup markers are mutually exclusive. Use `:defer` for `delete(value)`,
 `:defer-with` for `cleanup(value)`, or `:errdefer` for failure-only cleanup of
 returned owned values.
 
-For guarded multi-return bindings, `:defer` deletes the first bound value after
-the guard succeeds:
+For multi-return bindings, `:defer` deletes the first bound value:
+
+```clojure
+(let [[url ok?] (make-url input) :defer]
+  ...)
+```
+
+The first result must have a name; `[_ ok?] ... :defer` is rejected. Native
+sequence and Data destructuring do not accept cleanup markers because their
+source values and destructured elements have separate lifecycles.
+
+For guarded multi-return bindings, cleanup is installed after the guard
+succeeds:
 
 ```clojure
 (let [[data err] (read-text path) :or-return :defer]

@@ -793,6 +793,22 @@ emit_stmt :: proc(
             ownership_per_exit_mark,
         )
         for binding, binding_index in bindings {
+            if binding.is_destructure &&
+               (binding.deferred_delete || binding.defer_with_cleanup) &&
+               (binding_is_native_sequence_destructure(e, binding) ||
+                binding_is_data_destructure(e, binding)) {
+                marker := ":defer"
+                if binding.defer_with_cleanup {
+                    marker = ":defer-with"
+                }
+                return Compile_Error{
+                    message = fmt.tprintf(
+                        "%s on a destructured binding requires a multi-return value, not a native sequence or Data value",
+                        marker,
+                    ),
+                    span = binding.target_span,
+                }, false
+            }
             managed := false
             managed_ty := ""
             automatic_native := false

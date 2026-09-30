@@ -252,6 +252,133 @@ compile_result_binding_with_defer_with_cleanup :: proc(t: ^testing.T) {
 }
 
 @(test)
+compile_plain_multi_return_binding_with_cleanup_markers :: proc(t: ^testing.T) {
+    source := `(package main)
+(import strings "core:strings")
+
+(defn make-url [raw: string] -> [url: string, ok?: bool]
+  (return (strings.clone raw) true))
+
+(defn release-url [url: string]
+  (delete url))
+
+(defn delete-use [raw: string] -> int
+  (let [[url ok?] (make-url raw) :defer]
+    (if ok? (count url) 0)))
+
+(defn custom-use [raw: string] -> int
+  (let [[url ok?] (make-url raw) :defer-with release-url]
+    (if ok? (count url) 0)))`
+
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "url, ok_p := make_url(raw)"), true)
+    testing.expect_value(t, strings.count(result.output, "defer delete(url)"), 1)
+    testing.expect_value(t, strings.count(result.output, "defer release_url(url)"), 1)
+}
+
+@(test)
+reject_plain_multi_return_cleanup_without_first_name :: proc(t: ^testing.T) {
+    cases := []struct {
+        marker:  string,
+        message: string,
+    }{
+        {
+            marker = ":defer",
+            message = ":defer on a multi-return binding requires a named first result",
+        },
+        {
+            marker = ":defer-with release-url",
+            message = ":defer-with on a multi-return binding requires a named first result",
+        },
+    }
+    for test_case in cases {
+        source := fmt.tprintf(`(package main)
+
+(defn make-url [] -> [url: string, ok?: bool]
+  (return "" true))
+
+(defn release-url [url: string]
+  (delete url))
+
+(defn use []
+  (let [[_ ok?] (make-url) %s]
+    (println ok?)))`, test_case.marker)
+        _, err, ok := kvist.compile_source(source)
+        testing.expect_value(t, ok, false)
+        if ok {
+            continue
+        }
+        testing.expect_value(t, err.message, test_case.message)
+        delete(err.message)
+    }
+}
+
+@(test)
+reject_cleanup_markers_on_collection_destructuring :: proc(t: ^testing.T) {
+    cases := []struct {
+        source:  string,
+        message: string,
+    }{
+        {
+            source = `(package main)
+(defn use [xs: []int]
+  (let [[first second] xs :defer]
+    (println first second)))`,
+            message = ":defer on a destructured binding requires a multi-return value, not a native sequence or Data value",
+        },
+        {
+            source = `(package main)
+(defn release-first [value: Data]
+  (discard value))
+(defn use []
+  (let [[first second] '[1 2] :defer-with release-first]
+    (println first second)))`,
+            message = ":defer-with on a destructured binding requires a multi-return value, not a native sequence or Data value",
+        },
+    }
+    for test_case in cases {
+        _, err, ok := kvist.compile_source(test_case.source)
+        testing.expect_value(t, ok, false)
+        if ok {
+            continue
+        }
+        testing.expect_value(t, err.message, test_case.message)
+        delete(err.message)
+    }
+}
+
+@(test)
+reject_returning_plain_multi_return_deferred_binding :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defn make-url [raw: string] -> [url: [dynamic]byte, ok?: bool]
+  (return ([dynamic]byte [byte (count raw)]) true))
+
+(defn use [raw: string] -> [dynamic]byte
+  (let [[url ok?] (make-url raw) :defer]
+    url))`
+
+    _, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, false)
+    if ok {
+        return
+    }
+    defer delete(err.message)
+    testing.expect_value(t, strings.contains(err.message, "returned value depends on `url`"), true)
+    testing.expect_value(t, strings.contains(err.message, "`:defer` cleans up `url`"), true)
+}
+
+@(test)
 compile_let_or_return_err_binding_with_errdefer :: proc(t: ^testing.T) {
     source := `(package main)
 

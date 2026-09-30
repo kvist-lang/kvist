@@ -1094,12 +1094,30 @@ parse_let_bindings :: proc(form: CST_Form) -> (bindings: [dynamic]Binding, err: 
                 if err_deferred_delete && (or_modifier != "or-return" || names[1] != "err") {
                     return bindings, Compile_Error{message = ":errdefer is only supported on [value err] :or-return bindings", span = target.span}, false
                 }
-            } else if let_binding_has_defer_marker(form.items[:], i+2) {
-                return bindings, Compile_Error{message = ":defer binding marker is only supported on named local bindings or [value ok/err] :or-* bindings", span = form.items[i+2].span}, false
-            } else if let_binding_has_errdefer_marker(form.items[:], i+2) {
-                return bindings, Compile_Error{message = ":errdefer is only supported on [value err] :or-return bindings", span = form.items[i+2].span}, false
-            } else if let_binding_has_defer_with_marker(form.items[:], i+2) {
-                return bindings, Compile_Error{message = ":defer-with binding marker is only supported on named local bindings or [value ok/err] :or-* bindings", span = form.items[i+2].span}, false
+            } else if let_binding_has_defer_marker(form.items[:], next_i) {
+                if !simple_symbols {
+                    return bindings, Compile_Error{message = ":defer on a destructured binding requires a flat multi-return pattern", span = form.items[next_i].span}, false
+                }
+                if len(names) == 0 || names[0] == "" {
+                    return bindings, Compile_Error{message = ":defer on a multi-return binding requires a named first result", span = form.items[next_i].span}, false
+                }
+                deferred_delete = true
+                next_i += 1
+            } else if let_binding_has_errdefer_marker(form.items[:], next_i) {
+                return bindings, Compile_Error{message = ":errdefer is only supported on [value err] :or-return bindings", span = form.items[next_i].span}, false
+            } else if let_binding_has_defer_with_marker(form.items[:], next_i) {
+                if !simple_symbols {
+                    return bindings, Compile_Error{message = ":defer-with on a destructured binding requires a flat multi-return pattern", span = form.items[next_i].span}, false
+                }
+                if len(names) == 0 || names[0] == "" {
+                    return bindings, Compile_Error{message = ":defer-with on a multi-return binding requires a named first result", span = form.items[next_i].span}, false
+                }
+                if next_i+1 >= len(form.items) {
+                    return bindings, Compile_Error{message = ":defer-with expects a cleanup function", span = form.items[next_i].span}, false
+                }
+                defer_with_cleanup = true
+                cleanup = form.items[next_i+1]
+                next_i += 2
             }
             append(&bindings, Binding{
                 is_destructure      = !has_or_modifier,
