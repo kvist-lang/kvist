@@ -1567,8 +1567,37 @@ compile_manages_data_in_named_returns :: proc(t: ^testing.T) {
     testing.expect_value(t, strings.contains(output, "return kvist_data_retain(config), true"), true)
     testing.expect_value(t, strings.contains(output, "return kvist_data_retain(config), false"), true)
     testing.expect_value(t, strings.contains(output, "value, ok := parse()"), true)
-    testing.expect_value(t, strings.contains(output, "defer kvist_data_release(value)"), true)
+    testing.expect_value(t, strings.count(output, "defer kvist_data_release(value)"), 1)
     testing.expect_value(t, strings.contains(output, "return kvist_data_retain(value)"), true)
+}
+
+@(test)
+owned_data_result_destructuring_has_one_cleanup_owner :: proc(t: ^testing.T) {
+    source := `(package main)
+(import data "kvist:data")
+
+(defn parse [integer?: bool] -> [value: Data, ok: bool]
+  (if integer?
+    (return (data.from-int 42) true)
+    (return (data.from-string "forty-two") true)))
+
+(defn use [integer?: bool] -> int
+  (let [[parsed-value ok] (parse integer?)]
+    (if ok (data.count parsed-value) 0)))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(
+        t,
+        strings.count(output, "defer kvist_data_release(parsed_value)"),
+        1,
+    )
 }
 
 @(test)

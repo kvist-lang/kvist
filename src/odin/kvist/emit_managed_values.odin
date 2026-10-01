@@ -1291,6 +1291,11 @@ emit_managed_destructure_cleanup :: proc(
         }
         return
     }
+    lifecycle_cleanup_handled: [dynamic]bool
+    defer delete(lifecycle_cleanup_handled)
+    for _ in binding.pattern {
+        append(&lifecycle_cleanup_handled, false)
+    }
     for name, idx in binding.pattern {
         if name == "" {
             continue
@@ -1324,6 +1329,7 @@ emit_managed_destructure_cleanup :: proc(
                 per_exit_place,
             ) {
             e.ownership_plan_adoptions += 1
+            lifecycle_cleanup_handled[idx] = true
             result_lifecycle_delete(&lifecycle)
             continue
         }
@@ -1332,6 +1338,7 @@ emit_managed_destructure_cleanup :: proc(
             binding,
             name,
         ) {
+            lifecycle_cleanup_handled[idx] = true
             result_lifecycle_delete(&lifecycle)
             continue
         }
@@ -1361,12 +1368,14 @@ emit_managed_destructure_cleanup :: proc(
         ) {
             e.ownership_plan_adoptions += 1
             emit_result_lifecycle_cleanup(e, lifecycle, binding.pattern[:], idx)
+            lifecycle_cleanup_handled[idx] = true
             result_lifecycle_delete(&lifecycle)
             continue
         }
         // All non-candidates retain the legacy path while the ownership plan
         // is introduced one proven-equivalent category at a time.
         emit_result_lifecycle_cleanup(e, lifecycle, binding.pattern[:], idx)
+        lifecycle_cleanup_handled[idx] = true
         result_lifecycle_delete(&lifecycle)
     }
     if !binding.is_destructure {
@@ -1384,15 +1393,21 @@ emit_managed_destructure_cleanup :: proc(
         return
     }
     for name, idx in binding.pattern {
-        if name != "" &&
-           !binding_has_explicit_cleanup_for_name(binding, name) &&
-           type_text_has_managed_lifecycle(e, proc_decl.returns.named[idx].ty) &&
-           !body_deletes_name(body, name) {
-            emit_line(e, fmt.tprintf(
-                "defer %s",
-                managed_destroy_value_text(e, proc_decl.returns.named[idx].ty, name),
-            ))
+        if name == "" ||
+           binding_has_explicit_cleanup_for_name(binding, name) ||
+           lifecycle_cleanup_handled[idx] ||
+           !type_text_has_managed_lifecycle(e, proc_decl.returns.named[idx].ty) ||
+           body_deletes_name(body, name) {
+            continue
         }
+        // The result-lifecycle path above is authoritative when it installed
+        // or adopted cleanup. The managed-type path remains the fallback for
+        // Data results which still need ABI-level scoped cleanup. Letting both
+        // paths install cleanup releases the same owned Data value twice.
+        emit_line(e, fmt.tprintf(
+            "defer %s",
+            managed_destroy_value_text(e, proc_decl.returns.named[idx].ty, name),
+        ))
     }
 }
 
