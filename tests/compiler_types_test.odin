@@ -1594,6 +1594,60 @@ compile_typed_block_expression_captures_field_selector_root :: proc(t: ^testing.
 }
 
 @(test)
+compile_typed_block_expression_captures_dereferenced_local :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defstruct State [value: int])
+
+(defn nested [state: ^State enabled?: bool] -> int
+  (let [result: int
+          (if enabled?
+            (let [inner (+ state^.value 1)]
+              (+ inner state^.value))
+            0)]
+    result))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "proc(state: ^State) -> int"), true)
+    testing.expect_value(t, strings.contains(output, ")(state) if enabled_p else 0"), true)
+}
+
+@(test)
+compile_typed_block_expression_captures_local_pointer_binding :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defstruct State [value: int])
+
+(defn nested [enabled?: bool] -> int
+  (let [state (State :value 20)
+        pointer (addr state)
+        result: int
+          (if enabled?
+            (let [inner (+ pointer^.value 1)]
+              (+ inner pointer^.value))
+            0)]
+    result))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "proc(pointer: ^State) -> int"), true)
+    testing.expect_value(t, strings.contains(output, ")(pointer) if enabled_p else 0"), true)
+}
+
+@(test)
 compile_fn_types_and_literals :: proc(t: ^testing.T) {
     source := `(package main)
 

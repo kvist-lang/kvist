@@ -392,6 +392,54 @@ owned_managed_multi_result_moves_into_returned_struct :: proc(
 }
 
 @(test)
+owned_struct_multi_result_respects_explicit_destructors :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defstruct Result [value: string])
+
+(defn clone-result [value: string] -> [result: Result, ok: bool]
+  (let [[cloned error] (strings.clone value)]
+    (assert (= error nil))
+    (return (Result :value cloned) true)))
+
+(defn delete-result [result: Result]
+  (delete result.value))
+
+(defn explicit [] -> int
+  (let [[result ok] (clone-result "explicit")]
+    (defer (delete-result result))
+    (if ok (count result.value) 0)))
+
+(defn marked [] -> int
+  (let [[result ok] (clone-result "marked") :defer-with delete-result]
+    (if ok (count result.value) 0)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.count(result.output, "defer delete_result(result)"),
+        2,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(result.value)"),
+        false,
+    )
+}
+
+@(test)
 data_stored_in_data_aggregate_is_cleaned_after_the_aggregate_retains_it :: proc(
     t: ^testing.T,
 ) {

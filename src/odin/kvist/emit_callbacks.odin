@@ -724,6 +724,17 @@ proc_literal_capture_param :: proc(name, ty: string) -> Param {
     return Param{name = name, ty = capture_ty}
 }
 
+proc_literal_capture_root :: proc(name: string) -> string {
+    root := name
+    if dot := strings.index(root, "."); dot > 0 {
+        root = root[:dot]
+    }
+    for strings.has_suffix(root, "^") {
+        root = root[:len(root)-1]
+    }
+    return root
+}
+
 collect_proc_literal_captures :: proc(e: ^Emitter, body: []CST_Form, param_names: []string) -> (captures: [dynamic]Param) {
     for form in body {
         collect_proc_literal_captures_from_form(e, form, param_names, &captures)
@@ -745,18 +756,17 @@ collect_proc_literal_captures_from_form :: proc(e: ^Emitter, form: CST_Form, bou
             )
             return
         }
-        // Field selectors are represented as one symbol. Capture the typed
-        // local at the selector root so block expressions can read fields of
-        // parameters and locals inside their generated proc literal.
-        if dot := strings.index(name, "."); dot > 0 {
-            root := name[:dot]
-            if !name_in_list(bound_names, root) {
-                if ty, ok := lookup_local_type(e, root); ok {
-                    append_capture_param_unique(
-                        captures,
-                        proc_literal_capture_param(root, ty),
-                    )
-                }
+        // Dereferences and field selectors are represented as one symbol.
+        // Capture the typed local at the selector root so block expressions
+        // can read `pointer^` and `pointer^.field` through their generated
+        // procedure literal.
+        root := proc_literal_capture_root(name)
+        if root != name && !name_in_list(bound_names, root) {
+            if ty, ok := lookup_local_type(e, root); ok {
+                append_capture_param_unique(
+                    captures,
+                    proc_literal_capture_param(root, ty),
+                )
             }
         }
     case .List:

@@ -457,7 +457,7 @@ main :: proc() {
 		{
 			name = "generated compiler pointer expressions match model",
 			property = generated_compiler_pointer_expressions_match_model,
-			description = "generated address, dereference, pointee mutation, aliasing, function-boundary, struct-field, array-cell, and nested pointer expressions execute like an independent model",
+			description = "generated address, dereference, pointee mutation, aliasing, function-boundary, struct-field, array-cell, nested pointer, and typed block-capture expressions execute like an independent model",
 			tags = COMPILER_EXPRESSION_TAGS[:],
 		},
 		{

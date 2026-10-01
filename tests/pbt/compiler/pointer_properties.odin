@@ -21,6 +21,7 @@ Compiler_Pointer_Stats :: struct {
 	array_pointer:     int,
 	pointer_choice:    int,
 	pointer_to_pointer: int,
+	block_capture:     int,
 }
 
 generated_compiler_pointer_expressions_match_model :: proc(t: ^pbt.T) -> pbt.Result {
@@ -45,6 +46,7 @@ generated_compiler_pointer_expressions_match_model :: proc(t: ^pbt.T) -> pbt.Res
 	pbt.cover(t, stats.array_pointer > 0, 3, "array-pointer")
 	pbt.cover(t, stats.pointer_choice > 0, 3, "pointer-choice")
 	pbt.cover(t, stats.pointer_to_pointer > 0, 3, "pointer-to-pointer")
+	pbt.cover(t, stats.block_capture > 0, 3, "block-capture")
 
 	compiler_path := os.get_env("KVIST_PBT_COMPILER", t.value_allocator)
 	if compiler_path == "" {
@@ -90,7 +92,7 @@ write_compiler_pointer_expression :: proc(
 	builder: ^strings.Builder,
 	stats: ^Compiler_Pointer_Stats,
 ) -> int {
-	kind := pbt.draw(t, pbt.int_range(0, 12))
+	kind := pbt.draw(t, pbt.int_range(0, 14))
 	value := pbt.draw(t, pbt.int_range(-8, 8))
 
 	switch kind {
@@ -212,6 +214,26 @@ write_compiler_pointer_expression :: proc(
 		replacement := pbt.draw(t, pbt.int_range(-8, 8))
 		fmt.sbprintf(builder, "(let [value %d pointer (addr value) outer (addr pointer)] (set! (deref (deref outer)) %d) (+ value pointer^))", value, replacement)
 		return replacement * 2
+	case 13:
+		stats.address_form += 1
+		stats.deref_suffix += 1
+		stats.struct_pointer += 1
+		stats.block_capture += 1
+		x := pbt.draw(t, pbt.int_range(-5, 5))
+		y := pbt.draw(t, pbt.int_range(-5, 5))
+		adjustment := pbt.draw(t, pbt.int_range(-5, 5))
+		choose_x := pbt.draw(t, pbt.boolean())
+		strings.write_string(builder, "(let [point (Pbt-Point :x ")
+		fmt.sbprintf(builder, "%d :y %d :weight 0 :active? false) pointer (addr point) result: int (if %t (let [adjustment %d] (+ pointer^.x adjustment)) (let [adjustment %d] (+ pointer^.y adjustment)))] result)", x, y, choose_x, adjustment, adjustment)
+		return (x if choose_x else y) + adjustment
+	case 14:
+		stats.address_form += 1
+		stats.deref_suffix += 1
+		stats.block_capture += 1
+		adjustment := pbt.draw(t, pbt.int_range(-5, 5))
+		apply_adjustment := pbt.draw(t, pbt.boolean())
+		fmt.sbprintf(builder, "(let [value %d pointer (addr value) result: int (if %t (let [adjustment %d] (+ pointer^ adjustment)) (let [adjustment %d] (- pointer^ adjustment)))] result)", value, apply_adjustment, adjustment, adjustment)
+		return value + adjustment if apply_adjustment else value - adjustment
 	}
 	return 0
 }

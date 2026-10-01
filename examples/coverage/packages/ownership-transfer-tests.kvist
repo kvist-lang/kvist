@@ -11,6 +11,7 @@
 (defstruct Direct-Inner [text: string])
 (defstruct Direct-Outer [inner: Direct-Inner marker: int])
 (defstruct Data-Snapshot [comments: Data])
+(defstruct Pointer-State [value: int])
 (defunion Owned-Choice [owned: Owned-Value number: int])
 (defunion Text-Choice [text: string values: [dynamic]int number: int])
 
@@ -50,6 +51,9 @@
 (defn- clone-owned-value-result [value: string]
   -> [result: Owned-Value, ok: bool]
   (return (Owned-Value :value (strings.clone value)) true))
+
+(defn- delete-owned-value [value: Owned-Value]
+  (delete value.value))
 
 (defn- clone-text-choice-result [value: string]
   -> [result: Text-Choice, ok: bool]
@@ -148,6 +152,14 @@
 (defn- delete-text [value: string]
   (delete value))
 
+(defn- nested-pointer-value [state: ^Pointer-State enabled?: bool] -> int
+  (let [result: int
+          (if enabled?
+            (let [inner (+ state^.value 1)]
+              (+ inner state^.value))
+            0)]
+    result))
+
 (defn- pull-comments [ok?: bool] -> [comments: Data, ok: bool]
   (return [{:id "comment-1"} {:id "comment-2"}] ok?))
 
@@ -212,6 +224,30 @@
     (t.is (= aliased "aliased"))
     (t.is (= direct "direct"))
     (t.is (= single "single"))))
+
+(t.deftest owned-struct-multi-result-respects-explicit-destructor
+  (let [[value ok] (clone-owned-value-result "explicit")]
+    (defer (delete-owned-value value))
+    (t.is ok)
+    (t.is (= value.value "explicit"))))
+
+(t.deftest owned-struct-multi-result-respects-defer-with
+  (let [[value ok] (clone-owned-value-result "marker")
+          :defer-with delete-owned-value]
+    (t.is ok)
+    (t.is (= value.value "marker"))))
+
+(t.deftest nested-let-captures-dereferenced-outer-local
+  (let [state (Pointer-State :value 20)
+        pointer (addr state)
+        local-result: int
+          (if true
+            (let [inner (+ pointer^.value 1)]
+              (+ inner pointer^.value))
+            0)]
+    (t.is (= (nested-pointer-value (addr state) true) 41))
+    (t.is (= (nested-pointer-value (addr state) false) 0))
+    (t.is (= local-result 41))))
 
 (t.deftest conditional-owned-result-remaps-its-sibling-after-reordering
   (let [[unchanged? unchanged] (replace-text-result "hello" "z" "x")

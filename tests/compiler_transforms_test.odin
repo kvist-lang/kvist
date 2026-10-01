@@ -1193,6 +1193,39 @@ compile_thread_map_inline_worker :: proc(t: ^testing.T) {
 }
 
 @(test)
+compile_callbacks_with_named_multi_returns :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defn apply-optional
+  [f: (fn [x: int] -> [value: int, ok: bool]), x: int]
+  -> [value: int, ok: bool]
+  (f x))
+
+(defn square-even [x: int] -> [value: int, ok: bool]
+  (return (* x x) (= (% x 2) 0)))
+
+(defn named [] -> [value: int, ok: bool]
+  (apply-optional square-even 4))
+
+(defn inline [] -> [value: int, ok: bool]
+  (apply-optional
+    (fn [x: int] -> [value: int, ok: bool]
+      (return (+ x 1) true))
+    4))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "apply_optional(square_even, 4)"), true)
+    testing.expect_value(t, strings.contains(output, "proc(x: int) -> (value: int, ok: bool)"), true)
+}
+
+@(test)
 compile_thread_map_with_captured_inline_worker :: proc(t: ^testing.T) {
     source := `(package main)
 (import p "kvist:parallel")

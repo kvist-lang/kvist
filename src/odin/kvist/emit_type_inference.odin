@@ -556,6 +556,22 @@ obvious_form_type :: proc(e: ^Emitter, form: CST_Form) -> (string, bool) {
         }
         return collection_element_type(target_ty)
     }
+    if form.kind == .List && len(form.items) == 2 &&
+       (is_symbol(form.items[0], "addr") ||
+        is_symbol(form.items[0], "deref") ||
+        is_symbol(form.items[0], "^")) {
+        target_ty, ok_target_ty := obvious_form_type(e, form.items[1])
+        if !ok_target_ty {
+            return "", false
+        }
+        if is_symbol(form.items[0], "addr") {
+            return fmt.tprintf("^%s", target_ty), true
+        }
+        if len(target_ty) > 1 && target_ty[0] == '^' {
+            return target_ty[1:], true
+        }
+        return "", false
+    }
     if target_form, fields, field_span, ok_place := field_path_place_parts(form); ok_place {
         target_ty, ok_target_ty := obvious_form_type(e, target_form)
         if !ok_target_ty {

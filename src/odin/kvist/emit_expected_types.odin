@@ -341,6 +341,65 @@ callback_type_texts_equivalent :: proc(e: ^Emitter, lhs, rhs: string) -> bool {
     return resolved_lhs == resolved_rhs
 }
 
+named_callback_returns_match_expected :: proc(
+    e: ^Emitter,
+    expected: string,
+    actual: []Named_Return,
+) -> (matches, recognized: bool) {
+    text := strings.trim_space(expected)
+    if len(text) < 2 ||
+       !((text[0] == '(' && text[len(text)-1] == ')') ||
+         (text[0] == '[' && text[len(text)-1] == ']')) {
+        return false, false
+    }
+    parts := split_top_level_commas(text[1:len(text)-1])
+    defer delete(parts)
+    if len(parts) != len(actual) {
+        return false, true
+    }
+    for part, idx in parts {
+        colon := top_level_colon_index(part)
+        if colon < 0 {
+            return false, false
+        }
+        expected_ty := strings.trim_space(part[colon+1:])
+        if !strings.contains(expected_ty, "$T") &&
+           !strings.contains(expected_ty, "$U") &&
+           !strings.contains(expected_ty, "$K") &&
+           !strings.contains(expected_ty, "$V") &&
+           !callback_type_texts_equivalent(e, expected_ty, actual[idx].ty) {
+            return false, true
+        }
+    }
+    return true, true
+}
+
+callback_returns_match_expected :: proc(
+    e: ^Emitter,
+    expected: string,
+    actual: Return_Spec,
+) -> bool {
+    #partial switch actual.kind {
+    case .Single:
+        return strings.contains(expected, "$") ||
+               callback_type_texts_equivalent(
+                   e,
+                   actual.single_ty,
+                   expected,
+               )
+    case .Named:
+        matches, recognized := named_callback_returns_match_expected(
+            e,
+            expected,
+            actual.named[:],
+        )
+        return recognized && matches
+    case .None:
+        return false
+    }
+    return false
+}
+
 validate_proc_literal_for_expected_type :: proc(e: ^Emitter, form: CST_Form, expected_type: string) -> (Compile_Error, bool) {
     if expected_type == "" || !type_text_is_proc(expected_type) || form.kind != .List || len(form.items) == 0 || !is_symbol(form.items[0], "fn") {
         return {}, false
@@ -378,9 +437,11 @@ validate_proc_literal_for_expected_type :: proc(e: ^Emitter, form: CST_Form, exp
     }
     expected_return, expected_has_return := proc_type_single_return_type(expected_type)
     if expected_has_return {
-        if parsed.returns.kind != .Single ||
-           (!strings.contains(expected_return, "$") &&
-            !callback_type_texts_equivalent(e, parsed.returns.single_ty, expected_return)) {
+        if !callback_returns_match_expected(
+            e,
+            expected_return,
+            parsed.returns,
+        ) {
             actual := proc_literal_type_text(parsed)
             defer delete(actual)
             return Compile_Error{message = fmt.tprintf("expected %s callback, got %s", expected_type, actual), span = form.span}, true
@@ -430,9 +491,11 @@ validate_known_proc_for_expected_type :: proc(e: ^Emitter, form: CST_Form, expec
     }
     expected_return, expected_has_return := proc_type_single_return_type(expected_type)
     if expected_has_return {
-        if proc_decl.returns.kind != .Single ||
-           (!strings.contains(expected_return, "$") &&
-            !callback_type_texts_equivalent(e, proc_decl.returns.single_ty, expected_return)) {
+        if !callback_returns_match_expected(
+            e,
+            expected_return,
+            proc_decl.returns,
+        ) {
             actual := proc_decl_type_text(proc_decl)
             defer delete(actual)
             return Compile_Error{message = fmt.tprintf("expected %s callback, got %s", expected_type, actual), span = form.span}, true

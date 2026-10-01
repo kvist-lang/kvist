@@ -277,6 +277,8 @@ access, type-payload cases, value updates, mutation, `if`, typed-result `let`,
 function calls, anonymous functions and captures, pointers and aliasing,
 multi-return bindings and guards, `cond`, `case`, `for`, `while`, `break`,
 `continue`, `defer`, structural Data patterns and destructuring, and `->`.
+Pointer cases include dereferenced locals captured by the procedure literals
+used to lower typed block expressions.
 The core-macro cases additionally cover `->>`, `cond->`, `as->`, `doto`,
 `when-let`, `if-let`, `when-ok`, and `if-ok`, including single evaluation and
 short-circuiting across chained value/boolean and value/error bindings.
