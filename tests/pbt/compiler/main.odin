@@ -556,6 +556,18 @@ main :: proc() {
 			description = "generated nested fields moved locally or through owned parameters, scalar returns, aliases, and branch returns keep exactly one cleanup obligation",
 			tags = COMPILER_OWNERSHIP_TAGS[:],
 		},
+		{
+			name = "owned native multi-results propagate through local wrappers",
+			property = owned_native_multi_results_propagate_through_local_wrappers,
+			description = "generated let, alias, do, and branch wrappers preserve cleanup for owned native multi-results",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
+		{
+			name = "conditional owned results remap their activation sibling",
+			property = conditional_owned_results_remap_their_activation_sibling,
+			description = "generated direct, reordered, and aliased wrappers keep conditional cleanup attached to the returned sibling result",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
 	}
 	pbt.run_cli(properties[:], os.args[1:], {
 		num_tests = 25,

@@ -60,6 +60,153 @@ NESTED_SCALAR_TRANSFER_NAMES := [?]string{
 	"nested-scalar-branch-return",
 }
 
+Native_Result_Wrapper :: enum {
+	Direct,
+	Alias,
+	Do,
+	Branch,
+	Prefix,
+}
+
+NATIVE_RESULT_WRAPPER_NAMES := [?]string{
+	"native-result-direct",
+	"native-result-alias",
+	"native-result-do",
+	"native-result-branch",
+	"native-result-prefix",
+}
+
+Conditional_Result_Order :: enum {
+	Original,
+	Reordered,
+	Reordered_Aliases,
+}
+
+CONDITIONAL_RESULT_ORDER_NAMES := [?]string{
+	"conditional-result-original",
+	"conditional-result-reordered",
+	"conditional-result-reordered-aliases",
+}
+
+conditional_owned_results_remap_their_activation_sibling :: proc(t: ^pbt.T) -> pbt.Result {
+	order := Conditional_Result_Order(pbt.draw(t, pbt.int_range(0, len(CONDITIONAL_RESULT_ORDER_NAMES) - 1)))
+	for name, index in CONDITIONAL_RESULT_ORDER_NAMES {
+		pbt.cover(t, int(order) == index, 2, name)
+	}
+
+	return_body := "    (return value allocated?)"
+	return_spec := "[result: string, did-allocate?: bool]"
+	caller_pattern := "[value allocated?]"
+	switch order {
+	case .Reordered:
+		return_body = "    (return allocated? value)"
+		return_spec = "[did-allocate?: bool, result: string]"
+		caller_pattern = "[allocated? value]"
+	case .Reordered_Aliases:
+		return_body = "    (let [result value did-allocate? allocated?]\n      (return did-allocate? result))"
+		return_spec = "[did-allocate?: bool, result: string]"
+		caller_pattern = "[allocated? value]"
+	case .Original:
+	}
+	source := fmt.tprintf(`(package app)
+(import strings "core:strings")
+
+(defn replace-result [source: string old: string new: string] -> %s
+  (let [[value allocated?] (strings.replace source old new -1)]
+%s))
+
+(defn exercise [] -> int
+  (let [%s (replace-result "hello" "e" "a")]
+    (assert allocated?)
+    (count value)))`,
+		return_spec,
+		return_body,
+		caller_pattern,
+	)
+	pbt.note(t, fmt.tprintf("order=%s\n%s", CONDITIONAL_RESULT_ORDER_NAMES[order], source))
+	result, compile_error, ok := kvist.compile_source_with_map(source)
+	if !ok {
+		defer kvist.compile_error_delete(&compile_error)
+		return pbt.fail(fmt.tprintf("generated conditional-result wrapper did not compile: %s", compile_error.message))
+	}
+	defer delete(result.output)
+	defer kvist.source_map_slice_delete(result.source_map)
+	defer kvist.compile_warning_slice_delete(result.warnings)
+	if len(result.warnings) != 0 {
+		return pbt.fail(fmt.tprintf("generated conditional-result wrapper emitted warning: %s", result.warnings[0].message))
+	}
+	if !strings.contains(result.output, "if allocated_p {") ||
+	   !strings.contains(result.output, "delete(value)") {
+		return pbt.fail("caller did not condition cleanup on the remapped allocation result")
+	}
+	if strings.contains(result.output, "defer delete(value)") {
+		return pbt.fail("caller emitted unconditional cleanup for a conditional owned result")
+	}
+	return pbt.pass()
+}
+
+owned_native_multi_results_propagate_through_local_wrappers :: proc(t: ^pbt.T) -> pbt.Result {
+	shape := Native_Result_Wrapper(pbt.draw(t, pbt.int_range(0, len(NATIVE_RESULT_WRAPPER_NAMES) - 1)))
+	for name, index in NATIVE_RESULT_WRAPPER_NAMES {
+		pbt.cover(t, int(shape) == index, 2, name)
+	}
+
+	body := "    (return cloned true)"
+	prefix := ""
+	signature := "[source: string]"
+	call_args := "\"hello\""
+	switch shape {
+	case .Alias:
+		body = "    (let [result cloned]\n      (return result true))"
+	case .Do:
+		body = "    (do\n      (assert true)\n      (return cloned true))"
+	case .Branch:
+		signature = "[source: string flag: bool]"
+		call_args = "\"hello\" true"
+		body = "    (if flag\n      (return cloned true)\n      (return cloned true))"
+	case .Prefix:
+		prefix = "  (assert (> (count source) 0))\n"
+	case .Direct:
+	}
+	source := fmt.tprintf(`(package app)
+(import strings "core:strings")
+
+(defn clone-text-result %s -> [value: string, ok: bool]
+%s  (let [[cloned error] (strings.clone source)]
+    (assert (= error nil))
+%s))
+
+(defn exercise [] -> int
+  (let [[value ok] (clone-text-result %s)]
+    (assert ok)
+    (count value)))`,
+		signature,
+		prefix,
+		body,
+		call_args,
+	)
+	pbt.note(t, fmt.tprintf("shape=%s\n%s", NATIVE_RESULT_WRAPPER_NAMES[shape], source))
+	result, compile_error, ok := kvist.compile_source_with_map(source)
+	if !ok {
+		defer kvist.compile_error_delete(&compile_error)
+		return pbt.fail(fmt.tprintf("generated native-result wrapper did not compile: %s", compile_error.message))
+	}
+	defer delete(result.output)
+	defer kvist.source_map_slice_delete(result.source_map)
+	defer kvist.compile_warning_slice_delete(result.warnings)
+	if len(result.warnings) != 0 {
+		return pbt.fail(fmt.tprintf("generated native-result wrapper emitted warning: %s", result.warnings[0].message))
+	}
+	if !strings.contains(result.output, "defer delete(value)") {
+		return pbt.fail("caller did not acquire cleanup for the wrapped owned result")
+	}
+	if strings.contains(result.output, "defer delete(cloned)") ||
+	   strings.contains(result.output, "defer delete(result)") {
+		return pbt.fail("callee retained cleanup after returning the owned result")
+	}
+	return pbt.pass()
+}
+
 multiple_owned_leaves_transfer_across_aggregate_boundaries :: proc(t: ^pbt.T) -> pbt.Result {
 	leaf_count := pbt.draw(t, pbt.int_range(2, 4))
 	destination := Ownership_Destination(pbt.draw(t, pbt.int_range(0, len(OWNERSHIP_DESTINATION_NAMES) - 1)))

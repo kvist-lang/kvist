@@ -19,6 +19,24 @@
     (assert (= error nil))
     result))
 
+(defn- clone-text-result [value: string] -> [result: string, ok: bool]
+  (assert (> (count value) 0))
+  (let [[cloned error] (strings.clone value)]
+    (assert (= error nil))
+    (return cloned true)))
+
+(defn- clone-text-result-through-alias
+  [value: string] -> [result: string, ok: bool]
+  (let [[cloned error] (strings.clone value)]
+    (assert (= error nil))
+    (let [aliased cloned]
+      (return aliased true))))
+
+(defn- replace-text-result [value: string old: string new: string]
+  -> [allocated?: bool, result: string]
+  (let [[replaced did-allocate?] (strings.replace value old new -1)]
+    (return did-allocate? replaced)))
+
 (defn- clone-owned [value: string] -> Owned-Value
   (let [[result error] (strings.clone value)]
     (assert (= error nil))
@@ -129,6 +147,22 @@
         links (make [dynamic]Link) :defer-with delete-links]
     (append (addr links) link)
     (t.is (= links[0].observed.value "named"))))
+
+(t.deftest owned-native-multi-result-propagates-through-local-let-wrapper
+  (let [[value ok] (clone-text-result "wrapped")
+        [aliased alias-ok] (clone-text-result-through-alias "aliased")]
+    (t.is ok)
+    (t.is alias-ok)
+    (t.is (= value "wrapped"))
+    (t.is (= aliased "aliased"))))
+
+(t.deftest conditional-owned-result-remaps-its-sibling-after-reordering
+  (let [[unchanged? unchanged] (replace-text-result "hello" "z" "x")
+        [changed? changed] (replace-text-result "hello" "e" "a")]
+    (t.is (not unchanged?))
+    (t.is (= unchanged "hello"))
+    (t.is changed?)
+    (t.is (= changed "hallo"))))
 
 (t.deftest owned-managed-multi-result-moves-into-returned-struct
   (let [snapshot (load-comments true)

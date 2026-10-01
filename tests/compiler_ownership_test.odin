@@ -9,6 +9,111 @@ import "core:testing"
 import kvist "../src/odin/kvist"
 
 @(test)
+owned_native_multi_result_propagates_through_local_let_wrapper :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defn clone-text-result [source: string] -> [value: string, ok: bool]
+  (assert (> (count source) 0))
+  (let [[cloned error] (strings.clone source)]
+    (assert (= error nil))
+    (return cloned true)))
+
+(defn use [] -> int
+  (let [[value ok] (clone-text-result "hello")]
+    (assert ok)
+    (count value)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "value, ok := clone_text_result(\"hello\")\n    defer delete(value)",
+        ),
+        true,
+    )
+}
+
+@(test)
+conditional_owned_multi_result_remaps_sibling_after_reordering :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defn replace-result [source: string old: string new: string]
+  -> [allocated?: bool, result: string]
+  (let [[value allocated?] (strings.replace source old new -1)]
+    (return allocated? value)))
+
+(defn use [] -> int
+  (let [[allocated? value] (replace-result "hello" "e" "a")]
+    (assert allocated?)
+    (count value)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "if allocated_p {"), true)
+    testing.expect_value(t, strings.contains(result.output, "delete(value)"), true)
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(value)"),
+        false,
+    )
+}
+
+@(test)
+owned_result_prefix_inference_rejects_an_early_return :: proc(t: ^testing.T) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defn maybe-clone [source: string borrow?: bool] -> [value: string, owned?: bool]
+  (when borrow?
+    (return source false))
+  (let [[cloned error] (strings.clone source)]
+    (assert (= error nil))
+    (return cloned true)))
+
+(defn use [] -> int
+  (let [[value owned?] (maybe-clone "hello" false)]
+    (assert owned?)
+    (count value)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    // One branch borrows while the other owns. Without an explicit local
+    // contract, inferring cleanup from the tail alone would be a bad free.
+    testing.expect_value(t, strings.contains(result.output, "delete(value)"), false)
+}
+
+@(test)
 owned_managed_multi_result_moves_into_returned_struct :: proc(
     t: ^testing.T,
 ) {

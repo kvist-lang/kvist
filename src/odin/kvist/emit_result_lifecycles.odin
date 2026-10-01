@@ -173,6 +173,297 @@ known_foreign_result_type :: proc(
     return qualify_imported_odin_type(mapped_alias, contract.result_type), true
 }
 
+infer_result_lifecycle_from_let_binding :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    bindings: []Binding,
+    depth: int,
+) -> (Result_Lifecycle, bool) {
+    if depth > 16 || form.kind != .Symbol {
+        return {}, false
+    }
+    name := map_name(form.text)
+    defer delete(name)
+    for binding_index := len(bindings)-1;
+        binding_index >= 0;
+        binding_index -= 1 {
+        binding := bindings[binding_index]
+        for pattern_name, pattern_index in binding.pattern {
+            mapped_pattern := map_name(pattern_name)
+            matches := mapped_pattern == name
+            delete(mapped_pattern)
+            if !matches {
+                continue
+            }
+            return infer_result_lifecycle(
+                e,
+                binding.value,
+                pattern_index,
+                len(binding.pattern),
+                depth+1,
+            )
+        }
+        if binding.name == "" {
+            continue
+        }
+        mapped_binding := map_name(binding.name)
+        matches := mapped_binding == name
+        delete(mapped_binding)
+        if !matches {
+            continue
+        }
+        if binding.value.kind == .Symbol {
+            return infer_result_lifecycle_from_let_binding(
+                e,
+                binding.value,
+                bindings[:binding_index],
+                depth+1,
+            )
+        }
+        result_count, known_count := result_lifecycle_call_result_count(
+            e,
+            binding.value,
+        )
+        if known_count && result_count == 1 {
+            return infer_result_lifecycle(
+                e,
+                binding.value,
+                0,
+                1,
+                depth+1,
+            )
+        }
+        return {}, false
+    }
+    return {}, false
+}
+
+Result_Lifecycle_Binding_Origin :: struct {
+    binding_index: int,
+    result_index:  int,
+}
+
+result_lifecycle_let_binding_origin :: proc(
+    form: CST_Form,
+    bindings: []Binding,
+    depth: int,
+) -> (Result_Lifecycle_Binding_Origin, bool) {
+    if depth > 16 || form.kind != .Symbol {
+        return {}, false
+    }
+    name := map_name(form.text)
+    defer delete(name)
+    for binding_index := len(bindings)-1;
+        binding_index >= 0;
+        binding_index -= 1 {
+        binding := bindings[binding_index]
+        for pattern_name, pattern_index in binding.pattern {
+            mapped_pattern := map_name(pattern_name)
+            matches := mapped_pattern == name
+            delete(mapped_pattern)
+            if matches {
+                return Result_Lifecycle_Binding_Origin{
+                    binding_index = binding_index,
+                    result_index = pattern_index,
+                }, true
+            }
+        }
+        if binding.name == "" {
+            continue
+        }
+        mapped_binding := map_name(binding.name)
+        matches := mapped_binding == name
+        delete(mapped_binding)
+        if !matches {
+            continue
+        }
+        if binding.value.kind == .Symbol {
+            return result_lifecycle_let_binding_origin(
+                binding.value,
+                bindings[:binding_index],
+                depth+1,
+            )
+        }
+        return Result_Lifecycle_Binding_Origin{
+            binding_index = binding_index,
+            result_index = 0,
+        }, true
+    }
+    return {}, false
+}
+
+result_form_contains_return :: proc(form: CST_Form, depth: int = 0) -> bool {
+    if depth > 32 || form.kind != .List || len(form.items) == 0 {
+        return false
+    }
+    if form.items[0].kind == .Symbol {
+        switch form.items[0].text {
+        case "return":
+            return true
+        case "fn", "quote", "quasiquote", "comment":
+            return false
+        }
+    }
+    for item in form.items[1:] {
+        if result_form_contains_return(item, depth+1) {
+            return true
+        }
+    }
+    return false
+}
+
+infer_result_lifecycle_from_let_tail :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    bindings: []Binding,
+    result_index, result_count, depth: int,
+) -> (Result_Lifecycle, bool) {
+    if depth > 16 {
+        return {}, false
+    }
+    if form.kind == .Symbol {
+        return infer_result_lifecycle_from_let_binding(
+            e,
+            form,
+            bindings,
+            depth+1,
+        )
+    }
+    if form.kind != .List || len(form.items) == 0 ||
+       form.items[0].kind != .Symbol {
+        return {}, false
+    }
+    head := form.items[0].text
+    switch head {
+    case "return":
+        if len(form.items) == result_count+1 {
+            lifecycle, known := infer_result_lifecycle_from_let_tail(
+                e,
+                form.items[result_index+1],
+                bindings,
+                0,
+                1,
+                depth+1,
+            )
+            if !known || lifecycle.condition == .Always {
+                return lifecycle, known
+            }
+            value_origin, known_origin :=
+                result_lifecycle_let_binding_origin(
+                    form.items[result_index+1],
+                    bindings,
+                    depth+1,
+                )
+            if !known_origin ||
+               value_origin.binding_index < 0 ||
+               value_origin.binding_index >= len(bindings) {
+                result_lifecycle_delete(&lifecycle)
+                return {}, false
+            }
+            source_binding := bindings[value_origin.binding_index]
+            if lifecycle.condition_index < 0 ||
+               lifecycle.condition_index >= len(source_binding.pattern) {
+                result_lifecycle_delete(&lifecycle)
+                return {}, false
+            }
+            condition_origin := Result_Lifecycle_Binding_Origin{
+                binding_index = value_origin.binding_index,
+                result_index = lifecycle.condition_index,
+            }
+            for returned_form, returned_index in form.items[1:] {
+                returned_origin, known_returned_origin :=
+                    result_lifecycle_let_binding_origin(
+                        returned_form,
+                        bindings,
+                        depth+1,
+                    )
+                if known_returned_origin &&
+                   returned_origin == condition_origin {
+                    lifecycle.condition_index = returned_index
+                    return lifecycle, true
+                }
+            }
+            result_lifecycle_delete(&lifecycle)
+            return {}, false
+        }
+    case "do", "block":
+        if len(form.items) > 1 {
+            return infer_result_lifecycle_from_let_tail(
+                e,
+                form.items[len(form.items)-1],
+                bindings,
+                result_index,
+                result_count,
+                depth+1,
+            )
+        }
+    case "if":
+        if len(form.items) == 4 {
+            then_lifecycle, then_known :=
+                infer_result_lifecycle_from_let_tail(
+                    e,
+                    form.items[2],
+                    bindings,
+                    result_index,
+                    result_count,
+                    depth+1,
+                )
+            if !then_known {
+                return {}, false
+            }
+            defer result_lifecycle_delete(&then_lifecycle)
+            else_lifecycle, else_known :=
+                infer_result_lifecycle_from_let_tail(
+                    e,
+                    form.items[3],
+                    bindings,
+                    result_index,
+                    result_count,
+                    depth+1,
+                )
+            if !else_known {
+                return {}, false
+            }
+            if !result_lifecycles_match(
+                then_lifecycle,
+                else_lifecycle,
+            ) {
+                result_lifecycle_delete(&else_lifecycle)
+                return {}, false
+            }
+            return else_lifecycle, true
+        }
+    case "let":
+        if len(form.items) >= 3 {
+            nested_bindings, _, ok_bindings :=
+                parse_let_bindings(form.items[1])
+            if !ok_bindings {
+                return {}, false
+            }
+            defer delete(nested_bindings)
+            scoped_bindings: [dynamic]Binding
+            defer delete(scoped_bindings)
+            append(&scoped_bindings, ..bindings)
+            append(&scoped_bindings, ..nested_bindings[:])
+            return infer_result_lifecycle_from_let_tail(
+                e,
+                form.items[len(form.items)-1],
+                scoped_bindings[:],
+                result_index,
+                result_count,
+                depth+1,
+            )
+        }
+    }
+    return infer_result_lifecycle(
+        e,
+        form,
+        result_index,
+        result_count,
+        depth+1,
+    )
+}
+
 infer_result_lifecycle :: proc(
     e: ^Emitter,
     form: CST_Form,
@@ -189,6 +480,16 @@ infer_result_lifecycle :: proc(
         result_count,
     ); known {
         return lifecycle, true
+    }
+    if result_index == 0 &&
+       (form_is_owned_alloc_call(form, .String, e) ||
+        form_is_owned_alloc_call(form, .Bytes, e) ||
+        form_is_owned_alloc_call(form, .Slice, e)) {
+        return Result_Lifecycle{
+            kind = .Owned_Delete,
+            condition = .Always,
+            condition_index = -1,
+        }, true
     }
     if form.kind != .List ||
        len(form.items) == 0 ||
@@ -250,6 +551,23 @@ infer_result_lifecycle :: proc(
         }
         // Keep the else descriptor and release the duplicate above.
         return else_lifecycle, true
+    case "let":
+        if len(form.items) < 3 {
+            return {}, false
+        }
+        bindings, _, ok_bindings := parse_let_bindings(form.items[1])
+        if !ok_bindings {
+            return {}, false
+        }
+        defer delete(bindings)
+        return infer_result_lifecycle_from_let_tail(
+            e,
+            form.items[len(form.items)-1],
+            bindings[:],
+            result_index,
+            result_count,
+            depth+1,
+        )
     }
 
     _, proc_decl, ok_proc := resolve_proc_call_decl(e, head)
@@ -268,15 +586,19 @@ infer_result_lifecycle :: proc(
             condition_index = -1,
         }, true
     }
-    if len(proc_decl.body) != 1 {
+    if len(proc_decl.body) == 0 {
         return {}, false
     }
-    // Propagate only through a tail call/body whose returned value is itself
-    // proven. This remains conservative for procedures with more complex
-    // control flow or locally assembled result tuples.
+    for prefix_form in proc_decl.body[:len(proc_decl.body)-1] {
+        if result_form_contains_return(prefix_form) {
+            return {}, false
+        }
+    }
+    // Propagate through a proven tail value. Prefix forms are safe only when
+    // they cannot return an alternate ownership shape.
     return infer_result_lifecycle(
         e,
-        proc_decl.body[0],
+        proc_decl.body[len(proc_decl.body)-1],
         result_index,
         result_count,
         depth+1,
