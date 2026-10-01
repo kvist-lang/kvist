@@ -220,20 +220,13 @@ infer_result_lifecycle_from_let_binding :: proc(
                 depth+1,
             )
         }
-        result_count, known_count := result_lifecycle_call_result_count(
+        return infer_result_lifecycle(
             e,
             binding.value,
+            0,
+            1,
+            depth+1,
         )
-        if known_count && result_count == 1 {
-            return infer_result_lifecycle(
-                e,
-                binding.value,
-                0,
-                1,
-                depth+1,
-            )
-        }
-        return {}, false
     }
     return {}, false
 }
@@ -317,6 +310,7 @@ infer_result_lifecycle_from_let_tail :: proc(
     form: CST_Form,
     bindings: []Binding,
     result_index, result_count, depth: int,
+    intervening_forms: []CST_Form = nil,
 ) -> (Result_Lifecycle, bool) {
     if depth > 16 {
         return {}, false
@@ -370,6 +364,18 @@ infer_result_lifecycle_from_let_tail :: proc(
                 binding_index = value_origin.binding_index,
                 result_index = lifecycle.condition_index,
             }
+            source_condition_name := map_name(
+                source_binding.pattern[lifecycle.condition_index],
+            )
+            source_condition_mutated := body_assigns_name(
+                intervening_forms,
+                source_condition_name,
+            )
+            delete(source_condition_name)
+            if source_condition_mutated {
+                result_lifecycle_delete(&lifecycle)
+                return {}, false
+            }
             for returned_form, returned_index in form.items[1:] {
                 returned_origin, known_returned_origin :=
                     result_lifecycle_let_binding_origin(
@@ -379,6 +385,16 @@ infer_result_lifecycle_from_let_tail :: proc(
                     )
                 if known_returned_origin &&
                    returned_origin == condition_origin {
+                    returned_condition_name := map_name(returned_form.text)
+                    returned_condition_mutated := body_assigns_name(
+                        intervening_forms,
+                        returned_condition_name,
+                    )
+                    delete(returned_condition_name)
+                    if returned_condition_mutated {
+                        result_lifecycle_delete(&lifecycle)
+                        return {}, false
+                    }
                     lifecycle.condition_index = returned_index
                     return lifecycle, true
                 }
@@ -388,6 +404,18 @@ infer_result_lifecycle_from_let_tail :: proc(
         }
     case "do", "block":
         if len(form.items) > 1 {
+            for prefix_form in form.items[1:len(form.items)-1] {
+                if result_form_contains_return(prefix_form) {
+                    return {}, false
+                }
+            }
+            scoped_intervening: [dynamic]CST_Form
+            defer delete(scoped_intervening)
+            append(&scoped_intervening, ..intervening_forms)
+            append(
+                &scoped_intervening,
+                ..form.items[1:len(form.items)-1],
+            )
             return infer_result_lifecycle_from_let_tail(
                 e,
                 form.items[len(form.items)-1],
@@ -395,10 +423,18 @@ infer_result_lifecycle_from_let_tail :: proc(
                 result_index,
                 result_count,
                 depth+1,
+                scoped_intervening[:],
             )
         }
     case "if":
         if len(form.items) == 4 {
+            if result_form_contains_return(form.items[1]) {
+                return {}, false
+            }
+            scoped_intervening: [dynamic]CST_Form
+            defer delete(scoped_intervening)
+            append(&scoped_intervening, ..intervening_forms)
+            append(&scoped_intervening, form.items[1])
             then_lifecycle, then_known :=
                 infer_result_lifecycle_from_let_tail(
                     e,
@@ -407,6 +443,7 @@ infer_result_lifecycle_from_let_tail :: proc(
                     result_index,
                     result_count,
                     depth+1,
+                    scoped_intervening[:],
                 )
             if !then_known {
                 return {}, false
@@ -420,6 +457,7 @@ infer_result_lifecycle_from_let_tail :: proc(
                     result_index,
                     result_count,
                     depth+1,
+                    scoped_intervening[:],
                 )
             if !else_known {
                 return {}, false
@@ -441,10 +479,30 @@ infer_result_lifecycle_from_let_tail :: proc(
                 return {}, false
             }
             defer delete(nested_bindings)
+            for binding in nested_bindings {
+                if result_form_contains_return(binding.value) {
+                    return {}, false
+                }
+            }
+            for prefix_form in form.items[2:len(form.items)-1] {
+                if result_form_contains_return(prefix_form) {
+                    return {}, false
+                }
+            }
             scoped_bindings: [dynamic]Binding
             defer delete(scoped_bindings)
             append(&scoped_bindings, ..bindings)
             append(&scoped_bindings, ..nested_bindings[:])
+            scoped_intervening: [dynamic]CST_Form
+            defer delete(scoped_intervening)
+            append(&scoped_intervening, ..intervening_forms)
+            for binding in nested_bindings {
+                append(&scoped_intervening, binding.value)
+            }
+            append(
+                &scoped_intervening,
+                ..form.items[2:len(form.items)-1],
+            )
             return infer_result_lifecycle_from_let_tail(
                 e,
                 form.items[len(form.items)-1],
@@ -452,6 +510,7 @@ infer_result_lifecycle_from_let_tail :: proc(
                 result_index,
                 result_count,
                 depth+1,
+                scoped_intervening[:],
             )
         }
     }
@@ -499,29 +558,51 @@ infer_result_lifecycle :: proc(
     head := form.items[0].text
     switch head {
     case "return":
-        if len(form.items) != 2 {
-            return {}, false
+        if len(form.items) == 2 {
+            return infer_result_lifecycle(
+                e,
+                form.items[1],
+                result_index,
+                result_count,
+                depth+1,
+            )
         }
-        return infer_result_lifecycle(
-            e,
-            form.items[1],
-            result_index,
-            result_count,
-            depth+1,
-        )
+        if len(form.items) == result_count+1 {
+            lifecycle, known := infer_result_lifecycle(
+                e,
+                form.items[result_index+1],
+                0,
+                1,
+                depth+1,
+            )
+            if known && lifecycle.condition != .Always {
+                result_lifecycle_delete(&lifecycle)
+                return {}, false
+            }
+            return lifecycle, known
+        }
+        return {}, false
     case "do", "block":
-        if len(form.items) != 2 {
+        if len(form.items) < 2 {
             return {}, false
+        }
+        for prefix_form in form.items[1:len(form.items)-1] {
+            if result_form_contains_return(prefix_form) {
+                return {}, false
+            }
         }
         return infer_result_lifecycle(
             e,
-            form.items[1],
+            form.items[len(form.items)-1],
             result_index,
             result_count,
             depth+1,
         )
     case "if":
         if len(form.items) != 4 {
+            return {}, false
+        }
+        if result_form_contains_return(form.items[1]) {
             return {}, false
         }
         then_lifecycle, then_known := infer_result_lifecycle(
@@ -560,6 +641,25 @@ infer_result_lifecycle :: proc(
             return {}, false
         }
         defer delete(bindings)
+        for binding in bindings {
+            if result_form_contains_return(binding.value) {
+                return {}, false
+            }
+        }
+        for prefix_form in form.items[2:len(form.items)-1] {
+            if result_form_contains_return(prefix_form) {
+                return {}, false
+            }
+        }
+        intervening_forms: [dynamic]CST_Form
+        defer delete(intervening_forms)
+        for binding in bindings {
+            append(&intervening_forms, binding.value)
+        }
+        append(
+            &intervening_forms,
+            ..form.items[2:len(form.items)-1],
+        )
         return infer_result_lifecycle_from_let_tail(
             e,
             form.items[len(form.items)-1],
@@ -567,6 +667,7 @@ infer_result_lifecycle :: proc(
             result_index,
             result_count,
             depth+1,
+            intervening_forms[:],
         )
     }
 

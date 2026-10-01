@@ -47,6 +47,75 @@ owned_native_multi_result_propagates_through_local_let_wrapper :: proc(
 }
 
 @(test)
+owned_native_call_propagates_from_direct_multi_return :: proc(t: ^testing.T) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defn clone-text-result [source: string] -> [value: string, ok: bool]
+  (do
+    (assert (> (count source) 0))
+    (return (strings.clone source) true)))
+
+(defn use [] -> int
+  (let [[value ok] (clone-text-result "hello")]
+    (assert ok)
+    (count value)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "value, ok := clone_text_result(\"hello\")\n    defer delete(value)",
+        ),
+        true,
+    )
+}
+
+@(test)
+owned_optional_error_call_propagates_from_single_binding :: proc(t: ^testing.T) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defn clone-text-result [source: string] -> [value: string, ok: bool]
+  (let [cloned (strings.clone source)]
+    (return cloned true)))
+
+(defn use [] -> int
+  (let [[value ok] (clone-text-result "hello")]
+    (assert ok)
+    (count value)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "value, ok := clone_text_result(\"hello\")\n    defer delete(value)",
+        ),
+        true,
+    )
+}
+
+@(test)
 conditional_owned_multi_result_remaps_sibling_after_reordering :: proc(
     t: ^testing.T,
 ) {
@@ -110,6 +179,67 @@ owned_result_prefix_inference_rejects_an_early_return :: proc(t: ^testing.T) {
 
     // One branch borrows while the other owns. Without an explicit local
     // contract, inferring cleanup from the tail alone would be a bad free.
+    testing.expect_value(t, strings.contains(result.output, "delete(value)"), false)
+}
+
+@(test)
+owned_result_nested_prefix_inference_rejects_an_early_return :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defn maybe-replace [source: string borrow?: bool]
+  -> [allocated?: bool, result: string]
+  (let [[replaced did-allocate?] (strings.replace source "e" "a" -1)]
+    (when borrow?
+      (return true source))
+    (return did-allocate? replaced)))
+
+(defn use [] -> int
+  (let [[allocated? value] (maybe-replace "hello" true)]
+    (assert allocated?)
+    (count value)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, strings.contains(result.output, "delete(value)"), false)
+}
+
+@(test)
+conditional_owned_result_rejects_a_mutated_activation_sibling :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defn replace-inverted [source: string old: string new: string]
+  -> [allocated?: bool, result: string]
+  (let [[value did-allocate?] (strings.replace source old new -1)]
+    (set! did-allocate? (not did-allocate?))
+    (return did-allocate? value)))
+
+(defn use [] -> int
+  (let [[allocated? value] (replace-inverted "hello" "z" "x")]
+    (assert allocated?)
+    (count value)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
     testing.expect_value(t, strings.contains(result.output, "delete(value)"), false)
 }
 

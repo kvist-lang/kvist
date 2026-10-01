@@ -66,6 +66,9 @@ Native_Result_Wrapper :: enum {
 	Do,
 	Branch,
 	Prefix,
+	Direct_Return,
+	Do_Direct_Return,
+	Single_Binding,
 }
 
 NATIVE_RESULT_WRAPPER_NAMES := [?]string{
@@ -74,6 +77,9 @@ NATIVE_RESULT_WRAPPER_NAMES := [?]string{
 	"native-result-do",
 	"native-result-branch",
 	"native-result-prefix",
+	"native-result-direct-return",
+	"native-result-do-direct-return",
+	"native-result-single-binding",
 }
 
 Conditional_Result_Order :: enum {
@@ -86,6 +92,125 @@ CONDITIONAL_RESULT_ORDER_NAMES := [?]string{
 	"conditional-result-original",
 	"conditional-result-reordered",
 	"conditional-result-reordered-aliases",
+}
+
+Early_Return_Location :: enum {
+	Procedure_Body,
+	Let_Body,
+	Do_Body,
+	If_Condition,
+	Binding_Value,
+}
+
+EARLY_RETURN_LOCATION_NAMES := [?]string{
+	"early-return-procedure-body",
+	"early-return-let-body",
+	"early-return-do-body",
+	"early-return-if-condition",
+	"early-return-binding-value",
+}
+
+Condition_Mutation_Location :: enum {
+	Source,
+	Alias,
+	If_Condition,
+	Later_Binding,
+}
+
+CONDITION_MUTATION_LOCATION_NAMES := [?]string{
+	"condition-mutation-source",
+	"condition-mutation-alias",
+	"condition-mutation-if-condition",
+	"condition-mutation-later-binding",
+}
+
+mutated_activation_siblings_block_conditional_cleanup_inference :: proc(t: ^pbt.T) -> pbt.Result {
+	location := Condition_Mutation_Location(pbt.draw(t, pbt.int_range(0, len(CONDITION_MUTATION_LOCATION_NAMES) - 1)))
+	for name, index in CONDITION_MUTATION_LOCATION_NAMES {
+		pbt.cover(t, int(location) == index, 2, name)
+	}
+
+	body := "    (set! did-allocate? (not did-allocate?))\n    (return did-allocate? value)"
+	bindings := "[[value did-allocate?] (strings.replace source old new -1)]"
+	switch location {
+	case .Alias:
+		body = "    (let [condition did-allocate?]\n      (set! condition (not condition))\n      (return condition value))"
+	case .If_Condition:
+		body = "    (if (do (set! did-allocate? (not did-allocate?)) true)\n      (return did-allocate? value)\n      (return did-allocate? value))"
+	case .Later_Binding:
+		bindings = "[[value did-allocate?] (strings.replace source old new -1)\n        marker (do (set! did-allocate? (not did-allocate?)) true)]"
+		body = "    (assert marker)\n    (return did-allocate? value)"
+	case .Source:
+	}
+	source := fmt.tprintf(`(package app)
+(import strings "core:strings")
+
+(defn replace-inverted [source: string old: string new: string]
+  -> [allocated?: bool, result: string]
+  (let %s
+%s))
+
+(defn exercise [] -> int
+  (let [[allocated? value] (replace-inverted "hello" "z" "x")]
+    (assert allocated?)
+    (count value)))`, bindings, body)
+	pbt.note(t, fmt.tprintf("location=%s\n%s", CONDITION_MUTATION_LOCATION_NAMES[location], source))
+	result, compile_error, ok := kvist.compile_source_with_map(source)
+	if !ok {
+		defer kvist.compile_error_delete(&compile_error)
+		return pbt.fail(fmt.tprintf("generated condition-mutation wrapper did not compile: %s", compile_error.message))
+	}
+	defer delete(result.output)
+	defer kvist.source_map_slice_delete(result.source_map)
+	defer kvist.compile_warning_slice_delete(result.warnings)
+	if strings.contains(result.output, "delete(value)") {
+		return pbt.fail("caller inferred cleanup from a mutated activation sibling")
+	}
+	return pbt.pass()
+}
+
+early_returns_block_tail_result_lifecycle_inference :: proc(t: ^pbt.T) -> pbt.Result {
+	location := Early_Return_Location(pbt.draw(t, pbt.int_range(0, len(EARLY_RETURN_LOCATION_NAMES) - 1)))
+	for name, index in EARLY_RETURN_LOCATION_NAMES {
+		pbt.cover(t, int(location) == index, 2, name)
+	}
+
+	body := "  (let [[replaced did-allocate?] (strings.replace source \"e\" \"a\" -1)]\n    (when borrow? (return true source))\n    (return did-allocate? replaced))"
+	switch location {
+	case .Procedure_Body:
+		body = "  (when borrow? (return true source))\n  (let [[replaced did-allocate?] (strings.replace source \"e\" \"a\" -1)]\n    (return did-allocate? replaced))"
+	case .Do_Body:
+		body = "  (let [[replaced did-allocate?] (strings.replace source \"e\" \"a\" -1)]\n    (do\n      (when borrow? (return true source))\n      (return did-allocate? replaced)))"
+	case .If_Condition:
+		body = "  (let [[replaced did-allocate?] (strings.replace source \"e\" \"a\" -1)]\n    (if (do (when borrow? (return true source)) true)\n      (return did-allocate? replaced)\n      (return did-allocate? replaced)))"
+	case .Binding_Value:
+		body = "  (let [[replaced did-allocate?] (strings.replace source \"e\" \"a\" -1)\n        marker (do (when borrow? (return true source)) true)]\n    (assert marker)\n    (return did-allocate? replaced))"
+	case .Let_Body:
+	}
+	source := fmt.tprintf(`(package app)
+(import strings "core:strings")
+
+(defn maybe-replace [source: string borrow?: bool]
+  -> [allocated?: bool, result: string]
+%s)
+
+(defn exercise [] -> int
+  (let [[allocated? value] (maybe-replace "hello" true)]
+    (assert allocated?)
+    (count value)))`, body)
+	pbt.note(t, fmt.tprintf("location=%s\n%s", EARLY_RETURN_LOCATION_NAMES[location], source))
+	result, compile_error, ok := kvist.compile_source_with_map(source)
+	if !ok {
+		defer kvist.compile_error_delete(&compile_error)
+		return pbt.fail(fmt.tprintf("generated early-return wrapper did not compile: %s", compile_error.message))
+	}
+	defer delete(result.output)
+	defer kvist.source_map_slice_delete(result.source_map)
+	defer kvist.compile_warning_slice_delete(result.warnings)
+	if strings.contains(result.output, "delete(value)") {
+		return pbt.fail("caller inferred cleanup from a tail whose prefix can return a borrowed result")
+	}
+	return pbt.pass()
 }
 
 conditional_owned_results_remap_their_activation_sibling :: proc(t: ^pbt.T) -> pbt.Result {
@@ -153,6 +278,7 @@ owned_native_multi_results_propagate_through_local_wrappers :: proc(t: ^pbt.T) -
 
 	body := "    (return cloned true)"
 	prefix := ""
+	function_body := ""
 	signature := "[source: string]"
 	call_args := "\"hello\""
 	switch shape {
@@ -166,23 +292,29 @@ owned_native_multi_results_propagate_through_local_wrappers :: proc(t: ^pbt.T) -
 		body = "    (if flag\n      (return cloned true)\n      (return cloned true))"
 	case .Prefix:
 		prefix = "  (assert (> (count source) 0))\n"
+	case .Direct_Return:
+		function_body = "  (return (strings.clone source) true)"
+	case .Do_Direct_Return:
+		function_body = "  (do\n    (assert (> (count source) 0))\n    (return (strings.clone source) true))"
+	case .Single_Binding:
+		function_body = "  (let [cloned (strings.clone source)]\n    (return cloned true))"
 	case .Direct:
+	}
+	if function_body == "" {
+		function_body = fmt.tprintf("%s  (let [[cloned error] (strings.clone source)]\n    (assert (= error nil))\n%s)", prefix, body)
 	}
 	source := fmt.tprintf(`(package app)
 (import strings "core:strings")
 
 (defn clone-text-result %s -> [value: string, ok: bool]
-%s  (let [[cloned error] (strings.clone source)]
-    (assert (= error nil))
-%s))
+%s)
 
 (defn exercise [] -> int
   (let [[value ok] (clone-text-result %s)]
     (assert ok)
     (count value)))`,
 		signature,
-		prefix,
-		body,
+		function_body,
 		call_args,
 	)
 	pbt.note(t, fmt.tprintf("shape=%s\n%s", NATIVE_RESULT_WRAPPER_NAMES[shape], source))

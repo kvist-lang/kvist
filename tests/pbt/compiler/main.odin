@@ -568,6 +568,18 @@ main :: proc() {
 			description = "generated direct, reordered, and aliased wrappers keep conditional cleanup attached to the returned sibling result",
 			tags = COMPILER_OWNERSHIP_TAGS[:],
 		},
+		{
+			name = "early returns block tail result lifecycle inference",
+			property = early_returns_block_tail_result_lifecycle_inference,
+			description = "generated procedure, let, do, condition, and binding prefixes with early borrowed returns prevent unsafe tail ownership inference",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
+		{
+			name = "mutated activation siblings block conditional cleanup inference",
+			property = mutated_activation_siblings_block_conditional_cleanup_inference,
+			description = "generated source, alias, condition, and later-binding mutations prevent unsafe conditional cleanup propagation",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
 	}
 	pbt.run_cli(properties[:], os.args[1:], {
 		num_tests = 25,

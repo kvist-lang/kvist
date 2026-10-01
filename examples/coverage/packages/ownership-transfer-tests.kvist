@@ -32,9 +32,33 @@
     (let [aliased cloned]
       (return aliased true))))
 
+(defn- clone-text-direct-result [value: string]
+  -> [result: string, ok: bool]
+  (do
+    (assert (> (count value) 0))
+    (return (strings.clone value) true)))
+
+(defn- clone-text-single-binding-result [value: string]
+  -> [result: string, ok: bool]
+  (let [cloned (strings.clone value)]
+    (return cloned true)))
+
 (defn- replace-text-result [value: string old: string new: string]
   -> [allocated?: bool, result: string]
   (let [[replaced did-allocate?] (strings.replace value old new -1)]
+    (return did-allocate? replaced)))
+
+(defn- maybe-borrow-replaced-text [value: string borrow?: bool]
+  -> [allocated?: bool, result: string]
+  (let [[replaced did-allocate?] (strings.replace value "e" "a" -1)]
+    (when borrow?
+      (return true value))
+    (return did-allocate? replaced)))
+
+(defn- replace-text-with-inverted-condition [value: string]
+  -> [allocated?: bool, result: string]
+  (let [[replaced did-allocate?] (strings.replace value "z" "x" -1)]
+    (set! did-allocate? (not did-allocate?))
     (return did-allocate? replaced)))
 
 (defn- clone-owned [value: string] -> Owned-Value
@@ -150,11 +174,17 @@
 
 (t.deftest owned-native-multi-result-propagates-through-local-let-wrapper
   (let [[value ok] (clone-text-result "wrapped")
-        [aliased alias-ok] (clone-text-result-through-alias "aliased")]
+        [aliased alias-ok] (clone-text-result-through-alias "aliased")
+        [direct direct-ok] (clone-text-direct-result "direct")
+        [single single-ok] (clone-text-single-binding-result "single")]
     (t.is ok)
     (t.is alias-ok)
+    (t.is direct-ok)
+    (t.is single-ok)
     (t.is (= value "wrapped"))
-    (t.is (= aliased "aliased"))))
+    (t.is (= aliased "aliased"))
+    (t.is (= direct "direct"))
+    (t.is (= single "single"))))
 
 (t.deftest conditional-owned-result-remaps-its-sibling-after-reordering
   (let [[unchanged? unchanged] (replace-text-result "hello" "z" "x")
@@ -163,6 +193,16 @@
     (t.is (= unchanged "hello"))
     (t.is changed?)
     (t.is (= changed "hallo"))))
+
+(t.deftest conditional-owned-tail-does-not-hide-an-early-borrowed-return
+  (let [[marked-owned? value] (maybe-borrow-replaced-text "hello" true)]
+    (t.is marked-owned?)
+    (t.is (= value "hello"))))
+
+(t.deftest conditional-owned-result-rejects-a-mutated-sibling
+  (let [[marked-owned? value] (replace-text-with-inverted-condition "hello")]
+    (t.is marked-owned?)
+    (t.is (= value "hello"))))
 
 (t.deftest owned-managed-multi-result-moves-into-returned-struct
   (let [snapshot (load-comments true)
