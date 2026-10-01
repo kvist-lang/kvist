@@ -5,6 +5,208 @@ import "core:os"
 import "core:strings"
 import "core:time"
 
+result_has_owned_aggregate_fields :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    result_index, result_count: int,
+) -> bool {
+    fields := proc_call_owned_result_fields_at(
+        e,
+        form,
+        result_index,
+        result_count,
+    )
+    defer delete_struct_field_slice(&fields)
+    return len(fields) > 0
+}
+
+result_has_owned_union_variant :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    result_index, result_count: int,
+) -> bool {
+    union_type, variant_type, ok := proc_call_owned_union_result_variant_at(
+        e,
+        form,
+        result_index,
+        result_count,
+    )
+    defer delete(union_type)
+    defer delete(variant_type)
+    return ok
+}
+
+form_has_owned_aggregate_result_fields :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+) -> bool {
+    result_count, known_count := result_lifecycle_call_result_count(e, form)
+    if !known_count {
+        result_count = 1
+    }
+    for result_index in 0..<result_count {
+        if result_has_owned_aggregate_fields(
+            e,
+            form,
+            result_index,
+            result_count,
+        ) {
+            return true
+        }
+    }
+    return false
+}
+
+form_has_owned_union_result_variant :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+) -> bool {
+    result_count, known_count := result_lifecycle_call_result_count(e, form)
+    if !known_count {
+        result_count = 1
+    }
+    for result_index in 0..<result_count {
+        if result_has_owned_union_variant(
+            e,
+            form,
+            result_index,
+            result_count,
+        ) {
+            return true
+        }
+    }
+    return false
+}
+
+emit_owned_union_result_cleanup :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    result_index, result_count: int,
+    value_name: string,
+    deferred: bool,
+) -> bool {
+    union_type, variant_type, ok := proc_call_owned_union_result_variant_at(
+        e,
+        form,
+        result_index,
+        result_count,
+    )
+    defer delete(union_type)
+    defer delete(variant_type)
+    if !ok || value_name == "" {
+        return false
+    }
+    if deferred {
+        emit_line(e, "defer {")
+        e.indent += 1
+    }
+    payload_name := thread_temp_name(e)
+    defer delete(payload_name)
+    emit_line(e, fmt.tprintf(
+        "#partial switch %s in %s {{",
+        payload_name,
+        value_name,
+    ))
+    e.indent += 1
+    emit_line(e, fmt.tprintf("case %s:", variant_type))
+    e.indent += 1
+    emit_line(e, ownership_destroy_value_text(e, variant_type, payload_name))
+    e.indent -= 1
+    e.indent -= 1
+    emit_line(e, "}")
+    if deferred {
+        e.indent -= 1
+        emit_line(e, "}")
+    }
+    return true
+}
+
+emit_owned_aggregate_result_immediate_cleanup :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    result_index, result_count: int,
+    value_name: string,
+) -> bool {
+    if value_name == "" {
+        return false
+    }
+    fields := proc_call_owned_result_fields_at(
+        e,
+        form,
+        result_index,
+        result_count,
+    )
+    defer delete_struct_field_slice(&fields)
+    if len(fields) == 0 {
+        return false
+    }
+    for offset in 0..<len(fields) {
+        field := fields[len(fields)-1-offset]
+        emit_line_mapped(
+            e,
+            ownership_destroy_value_text(
+                e,
+                field.ty,
+                fmt.tprintf("%s.%s", value_name, field.name),
+            ),
+            form.span,
+        )
+    }
+    return true
+}
+
+emit_owned_aggregate_result_scope_cleanup :: proc(
+    e: ^Emitter,
+    binding: Binding,
+    bindings: []Binding,
+    binding_index: int,
+    body: []CST_Form,
+    result_index: int,
+    value_name: string,
+) -> bool {
+    if value_name == "" ||
+       !destructured_result_cleanup_is_safe(
+           e,
+           bindings,
+           binding_index,
+           body,
+           value_name,
+       ) {
+        return false
+    }
+    fields := proc_call_owned_result_fields_at(
+        e,
+        binding.value,
+        result_index,
+        len(binding.pattern),
+    )
+    defer delete_struct_field_slice(&fields)
+    if len(fields) == 0 {
+        return false
+    }
+    emitted := false
+    for offset in 0..<len(fields) {
+        field := fields[len(fields)-1-offset]
+        field_name := fmt.tprintf("%s.%s", value_name, field.name)
+        safe := destructured_result_cleanup_is_safe(
+            e,
+            bindings,
+            binding_index,
+            body,
+            field_name,
+        )
+        if safe {
+            emit_line(e, fmt.tprintf(
+                "defer %s",
+                ownership_destroy_value_text(e, field.ty, field_name),
+            ))
+            emitted = true
+        }
+        delete(field_name)
+    }
+    return emitted
+}
+
 emit_binding_assignment :: proc(e: ^Emitter, binding: Binding, value: string) {
     if binding.is_destructure {
         output_names: [dynamic]string
@@ -37,6 +239,22 @@ emit_binding_assignment :: proc(e: ^Emitter, binding: Binding, value: string) {
             )
             owned := known && result_lifecycle_is_owned(lifecycle)
             result_lifecycle_delete(&lifecycle)
+            if !owned {
+                owned = result_has_owned_aggregate_fields(
+                    e,
+                    binding.value,
+                    idx,
+                    len(binding.pattern),
+                )
+            }
+            if !owned {
+                owned = result_has_owned_union_variant(
+                    e,
+                    binding.value,
+                    idx,
+                    len(binding.pattern),
+                )
+            }
             if !owned {
                 continue
             }
@@ -84,13 +302,32 @@ emit_binding_assignment :: proc(e: ^Emitter, binding: Binding, value: string) {
                 idx,
                 len(binding.pattern),
             )
-            if known {
+            if known && result_lifecycle_is_owned(lifecycle) {
                 emit_result_lifecycle_immediate_cleanup(
                     e,
                     lifecycle,
                     output_names[:],
                     idx,
                 )
+            } else {
+                cleaned_aggregate :=
+                    emit_owned_aggregate_result_immediate_cleanup(
+                    e,
+                    binding.value,
+                    idx,
+                    len(binding.pattern),
+                    output_names[idx],
+                )
+                if !cleaned_aggregate {
+                    _ = emit_owned_union_result_cleanup(
+                        e,
+                        binding.value,
+                        idx,
+                        len(binding.pattern),
+                        output_names[idx],
+                        false,
+                    )
+                }
             }
             result_lifecycle_delete(&lifecycle)
         }
@@ -112,7 +349,20 @@ emit_binding_assignment :: proc(e: ^Emitter, binding: Binding, value: string) {
             0,
             1,
         )
-        if known && result_lifecycle_is_owned(lifecycle) {
+        owned_lifecycle := known && result_lifecycle_is_owned(lifecycle)
+        owned_aggregate := result_has_owned_aggregate_fields(
+            e,
+            binding.value,
+            0,
+            1,
+        )
+        owned_union := result_has_owned_union_variant(
+            e,
+            binding.value,
+            0,
+            1,
+        )
+        if owned_lifecycle || owned_aggregate || owned_union {
             discard_name := thread_temp_name(e)
             defer delete(discard_name)
             emit_prefixed_expr_mapped(
@@ -122,12 +372,33 @@ emit_binding_assignment :: proc(e: ^Emitter, binding: Binding, value: string) {
                 binding.value.span,
             )
             discard_pattern := [1]string{discard_name}
-            emit_result_lifecycle_immediate_cleanup(
-                e,
-                lifecycle,
-                discard_pattern[:],
-                0,
-            )
+            if owned_lifecycle {
+                emit_result_lifecycle_immediate_cleanup(
+                    e,
+                    lifecycle,
+                    discard_pattern[:],
+                    0,
+                )
+            } else {
+                cleaned_aggregate :=
+                    emit_owned_aggregate_result_immediate_cleanup(
+                    e,
+                    binding.value,
+                    0,
+                    1,
+                    discard_name,
+                )
+                if !cleaned_aggregate {
+                    _ = emit_owned_union_result_cleanup(
+                        e,
+                        binding.value,
+                        0,
+                        1,
+                        discard_name,
+                        false,
+                    )
+                }
+            }
         } else {
             emit_prefixed_expr_mapped(e, "_ = ", value, binding.value.span)
         }
@@ -1090,6 +1361,22 @@ emit_result_lifecycle_discard_cleanup :: proc(
             result_count,
         )
         owned := known && result_lifecycle_is_owned(lifecycle)
+        if !owned && result_count > 1 {
+            owned = result_has_owned_aggregate_fields(
+                e,
+                form,
+                result_index,
+                result_count,
+            )
+        }
+        if !owned {
+            owned = result_has_owned_union_variant(
+                e,
+                form,
+                result_index,
+                result_count,
+            )
+        }
         append(&lifecycles, lifecycle)
         append(&lifecycle_known, known)
         append(&output_names, "")
@@ -1135,13 +1422,36 @@ emit_result_lifecycle_discard_cleanup :: proc(
         form.span,
     )
     for should_cleanup, result_index in cleanup_result {
-        if should_cleanup && lifecycle_known[result_index] {
+        if !should_cleanup {
+            continue
+        }
+        if lifecycle_known[result_index] &&
+           result_lifecycle_is_owned(lifecycles[result_index]) {
             emit_result_lifecycle_immediate_cleanup(
                 e,
                 lifecycles[result_index],
                 output_names[:],
                 result_index,
             )
+        } else {
+            cleaned_aggregate :=
+                emit_owned_aggregate_result_immediate_cleanup(
+                e,
+                form,
+                result_index,
+                result_count,
+                output_names[result_index],
+            )
+            if !cleaned_aggregate {
+                _ = emit_owned_union_result_cleanup(
+                    e,
+                    form,
+                    result_index,
+                    result_count,
+                    output_names[result_index],
+                    false,
+                )
+            }
         }
     }
     return true
@@ -1305,6 +1615,32 @@ emit_managed_destructure_cleanup :: proc(
             len(binding.pattern),
         )
         if !known {
+            cleaned_aggregate := emit_owned_aggregate_result_scope_cleanup(
+                e,
+                binding,
+                bindings,
+                binding_index,
+                body,
+                idx,
+                name,
+            )
+            if !cleaned_aggregate &&
+               destructured_result_cleanup_is_safe(
+                   e,
+                   bindings,
+                   binding_index,
+                   body,
+                   name,
+               ) {
+                _ = emit_owned_union_result_cleanup(
+                    e,
+                    binding.value,
+                    idx,
+                    len(binding.pattern),
+                    name,
+                    true,
+                )
+            }
             continue
         }
         expected_cleanup := Ownership_IR_Cleanup_Need.Always

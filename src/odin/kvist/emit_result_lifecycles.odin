@@ -367,7 +367,7 @@ infer_result_lifecycle_from_let_tail :: proc(
             source_condition_name := map_name(
                 source_binding.pattern[lifecycle.condition_index],
             )
-            source_condition_mutated := body_assigns_name(
+            source_condition_mutated := body_may_mutate_name(
                 intervening_forms,
                 source_condition_name,
             )
@@ -386,7 +386,7 @@ infer_result_lifecycle_from_let_tail :: proc(
                 if known_returned_origin &&
                    returned_origin == condition_origin {
                     returned_condition_name := map_name(returned_form.text)
-                    returned_condition_mutated := body_assigns_name(
+                    returned_condition_mutated := body_may_mutate_name(
                         intervening_forms,
                         returned_condition_name,
                     )
@@ -1155,7 +1155,7 @@ result_lifecycle_condition_is_stable :: proc(
        pattern[lifecycle.condition_index] == "" {
         return false
     }
-    return !body_assigns_name(body, pattern[lifecycle.condition_index])
+    return !body_may_mutate_name(body, pattern[lifecycle.condition_index])
 }
 
 result_lifecycle_activation_text :: proc(

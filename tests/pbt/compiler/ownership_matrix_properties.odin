@@ -116,6 +116,7 @@ Condition_Mutation_Location :: enum {
 	If_Condition,
 	Later_Binding,
 	Toggle_Source,
+	Pointer_Source,
 }
 
 CONDITION_MUTATION_LOCATION_NAMES := [?]string{
@@ -124,6 +125,7 @@ CONDITION_MUTATION_LOCATION_NAMES := [?]string{
 	"condition-mutation-if-condition",
 	"condition-mutation-later-binding",
 	"condition-mutation-toggle-source",
+	"condition-mutation-pointer-source",
 }
 
 Owned_Discard_Shape :: enum {
@@ -136,6 +138,13 @@ Owned_Discard_Shape :: enum {
 	Explicit_Simple,
 	Explicit_Multi,
 	Explicit_Conditional,
+	Aggregate_Binding,
+	Aggregate_Binding_Right,
+	Explicit_Aggregate,
+	Implicit_Aggregate,
+	Union_Binding,
+	Explicit_Union,
+	Implicit_Union,
 }
 
 OWNED_DISCARD_SHAPE_NAMES := [?]string{
@@ -148,6 +157,13 @@ OWNED_DISCARD_SHAPE_NAMES := [?]string{
 	"owned-discard-explicit-simple",
 	"owned-discard-explicit-multi",
 	"owned-discard-explicit-conditional",
+	"owned-discard-aggregate-binding",
+	"owned-discard-aggregate-binding-right",
+	"owned-discard-explicit-aggregate",
+	"owned-discard-implicit-aggregate",
+	"owned-discard-union-binding",
+	"owned-discard-explicit-union",
+	"owned-discard-implicit-union",
 }
 
 discarded_owned_results_are_cleaned_immediately :: proc(t: ^pbt.T) -> pbt.Result {
@@ -179,6 +195,23 @@ discarded_owned_results_are_cleaned_immediately :: proc(t: ^pbt.T) -> pbt.Result
 		exercise_body = "  (discard (clone-pair \"left\" \"right\"))\n  1"
 	case .Explicit_Conditional:
 		exercise_body = "  (discard (strings.replace \"hello\" \"e\" \"a\" -1))\n  1"
+	case .Aggregate_Binding:
+		binding = "[_ ok] (make-box)"
+		body = "    (if ok 1 0)"
+	case .Aggregate_Binding_Right:
+		binding = "[ok _] (make-box-right)"
+		body = "    (if ok 1 0)"
+	case .Explicit_Aggregate:
+		exercise_body = "  (discard (make-box))\n  1"
+	case .Implicit_Aggregate:
+		exercise_body = "  (make-box)\n  1"
+	case .Union_Binding:
+		binding = "[_ ok] (make-choice)"
+		body = "    (if ok 1 0)"
+	case .Explicit_Union:
+		exercise_body = "  (discard (make-choice))\n  1"
+	case .Implicit_Union:
+		exercise_body = "  (make-choice)\n  1"
 	case .Simple:
 	}
 	if exercise_body == "" {
@@ -187,9 +220,21 @@ discarded_owned_results_are_cleaned_immediately :: proc(t: ^pbt.T) -> pbt.Result
 	source := fmt.tprintf(`(package app)
 (import strings "core:strings")
 
+(defstruct Box [text: string])
+(defunion Choice [text: string number: int])
+
 (defn clone-pair [left: string right: string]
   -> [left-result: string, right-result: string]
   (return (strings.clone left) (strings.clone right)))
+
+(defn make-box [] -> [box: Box, ok: bool]
+  (return (Box :text (strings.clone "box")) true))
+
+(defn make-box-right [] -> [ok: bool, box: Box]
+  (return true (Box :text (strings.clone "box"))))
+
+(defn make-choice [] -> [choice: Choice, ok: bool]
+  (return (Choice :text (strings.clone "choice")) true))
 
 (defn exercise [] -> int
 %s)`, exercise_body)
@@ -235,10 +280,15 @@ mutated_activation_siblings_block_conditional_cleanup_inference :: proc(t: ^pbt.
 		body = "    (assert marker)\n    (return did-allocate? value)"
 	case .Toggle_Source:
 		body = "    (toggle! did-allocate?)\n    (return did-allocate? value)"
+	case .Pointer_Source:
+		body = "    (invert-bool! (addr did-allocate?))\n    (return did-allocate? value)"
 	case .Source:
 	}
 	source := fmt.tprintf(`(package app)
 (import strings "core:strings")
+
+(defn invert-bool! [value: ^bool]
+  (toggle! value^))
 
 (defn replace-inverted [source: string old: string new: string]
   -> [allocated?: bool, result: string]
