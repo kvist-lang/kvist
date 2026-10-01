@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -203,6 +204,136 @@ execution_temp_parent_can_follow_source_volume :: proc(t: ^testing.T) {
     )
     testing.expect_value(t, system_temp, "")
     testing.expect_value(t, relative, ".")
+}
+
+@(test)
+generated_output_copies_imported_kvist_runtime_packages :: proc(
+    t: ^testing.T,
+) {
+    dir, dir_err := os.make_directory_temp(
+        "",
+        "kvist-portable-runtime-*",
+        context.allocator,
+    )
+    testing.expect_value(t, dir_err == nil, true)
+    if dir_err != nil {
+        return
+    }
+    defer os.remove_all(dir)
+    defer delete(dir)
+
+    runtime_root, root_err := os.join_path(
+        {dir, "runtime"},
+        context.allocator,
+    )
+    package_dir, package_err := os.join_path(
+        {runtime_root, "map"},
+        context.allocator,
+    )
+    sidecar_path, sidecar_err := os.join_path(
+        {package_dir, "entry.odin"},
+        context.allocator,
+    )
+    output_path, output_err := os.join_path(
+        {dir, "generated.odin"},
+        context.allocator,
+    )
+    artifact_root, artifact_err := os.join_path(
+        {dir, "generated.odin.packages"},
+        context.allocator,
+    )
+    testing.expect_value(
+        t,
+        root_err == nil && package_err == nil && sidecar_err == nil &&
+        output_err == nil && artifact_err == nil,
+        true,
+    )
+    if root_err != nil || package_err != nil || sidecar_err != nil ||
+       output_err != nil || artifact_err != nil {
+        return
+    }
+    defer delete(runtime_root)
+    defer delete(package_dir)
+    defer delete(sidecar_path)
+    defer delete(output_path)
+    defer delete(artifact_root)
+    testing.expect_value(t, os.make_directory_all(package_dir) == nil, true)
+    sidecar := `package kvist_map
+
+entry :: struct($K: typeid, $V: typeid) {
+    key: K,
+    value: V,
+}
+`
+    testing.expect_value(
+        t,
+        os.write_entire_file_from_string(sidecar_path, sidecar) == nil,
+        true,
+    )
+    source := fmt.aprintf(
+        "package main\n\nimport map__raw %q\n",
+        package_dir,
+    )
+    defer delete(source)
+    output, ok := prepare_generated_output_with_roots(
+        source,
+        output_path,
+        artifact_root,
+        []string{runtime_root},
+    )
+    defer delete(output)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        return
+    }
+    testing.expect_value(t, strings.contains(output, package_dir), false)
+    testing.expect_value(
+        t,
+        strings.contains(
+            output,
+            `import map__raw "generated.odin.packages/kvist-runtime/map"`,
+        ),
+        true,
+    )
+    copied_sidecar, copied_err := os.join_path(
+        {artifact_root, "kvist-runtime", "map", "entry.odin"},
+        context.allocator,
+    )
+    testing.expect_value(t, copied_err == nil, true)
+    if copied_err != nil {
+        return
+    }
+    defer delete(copied_sidecar)
+    copied, read_err := os.read_entire_file_from_path(
+        copied_sidecar,
+        context.allocator,
+    )
+    defer delete(copied)
+    testing.expect_value(t, read_err == nil, true)
+    if read_err == nil {
+        testing.expect_value(t, string(copied), sidecar)
+    }
+
+    relative_artifact_root := "generated-relative.odin.packages"
+    relative_output, relative_ok := prepare_generated_output_with_roots(
+        source,
+        "generated-relative.odin",
+        relative_artifact_root,
+        []string{runtime_root},
+    )
+    defer delete(relative_output)
+    defer os.remove_all(relative_artifact_root)
+    testing.expect_value(t, relative_ok, true)
+    if relative_ok {
+        testing.expect_value(
+            t,
+            strings.contains(
+                relative_output,
+                `import map__raw "generated-relative.odin.packages/kvist-runtime/map"`,
+            ),
+            true,
+        )
+    }
 }
 
 @(test)

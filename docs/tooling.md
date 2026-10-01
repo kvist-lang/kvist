@@ -133,6 +133,11 @@ kvist compile app.kvist -o build/app.odin --map build/app.map
 ```
 
 `--packages` writes the generated package tree as well as the root unit.
+When an imported `kvist:*` package includes raw Odin sidecar files, commands
+that write generated Odin copy that package into
+`<output>.packages/kvist-runtime`. The generated import points at this copy
+instead of the compiler installation. Keep the `.packages` directory beside
+the generated file when moving or building it elsewhere.
 
 ## Cache
 
