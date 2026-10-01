@@ -19,6 +19,17 @@ Ownership_IR_Flow :: struct {
     exits: [dynamic]Ownership_IR_Exit,
 }
 
+// Cleanup behavior is semantic data. In particular, an owned union result is
+// not a call to a magic cleanup function: it needs a partial switch over the
+// returned variant. Keep that distinction explicit instead of encoding it in
+// cleanup_head.
+Ownership_IR_Shadow_Cleanup_Kind :: enum {
+    None,
+    Call,
+    Value,
+    Owned_Union_Result,
+}
+
 Ownership_IR_Shadow_Place :: struct {
     place:                    int,
     name:                     string,
@@ -27,7 +38,11 @@ Ownership_IR_Shadow_Place :: struct {
     aggregate_cleanup_unsupported: bool,
     aggregate_cleanup_reassign_only: bool,
     aggregate_return_transfers_owner: bool,
+    cleanup_kind:             Ownership_IR_Shadow_Cleanup_Kind,
     cleanup_head:             string,
+    cleanup_form:             CST_Form,
+    cleanup_result_index:     int,
+    cleanup_result_count:     int,
     activation:               Ownership_Activation,
     activation_index:         int,
     scope_exits:              [dynamic]Ownership_IR_Exit,
@@ -51,6 +66,21 @@ Ownership_IR_Shadow_Proc :: struct {
     graph:                 Ownership_IR_Proc,
     places:                [dynamic]Ownership_IR_Shadow_Place,
     diagnostic_candidates: [dynamic]Ownership_IR_Diagnostic_Fact,
+}
+
+ownership_ir_place_cleanup_matches_call :: proc(
+    place: Ownership_IR_Shadow_Place,
+    head: string,
+) -> bool {
+    #partial switch place.cleanup_kind {
+    case .Call:
+        return place.cleanup_head == head
+    case .Value:
+        return head == "delete"
+    case .Owned_Union_Result, .None:
+        return false
+    }
+    return false
 }
 
 Ownership_IR_Shadow_Stats :: struct {
@@ -362,6 +392,10 @@ ownership_ir_add_shadow_place :: proc(
     diagnose_use_after_transfer := false,
     diagnose_unreleased := false,
     automatic_cleanup := Ownership_IR_Automatic_Cleanup.None,
+    cleanup_kind := Ownership_IR_Shadow_Cleanup_Kind.None,
+    cleanup_form := CST_Form{},
+    cleanup_result_index := -1,
+    cleanup_result_count := 0,
 ) -> int {
     place := lowering.result.graph.place_count
     lowering.result.graph.place_count += 1
@@ -371,7 +405,11 @@ ownership_ir_add_shadow_place :: proc(
         ty = strings.clone(ty),
         aggregate_root = strings.clone(aggregate_root),
         aggregate_cleanup_unsupported = aggregate_cleanup_unsupported,
+        cleanup_kind = cleanup_kind,
         cleanup_head = strings.clone(cleanup_head),
+        cleanup_form = cleanup_form,
+        cleanup_result_index = cleanup_result_index,
+        cleanup_result_count = cleanup_result_count,
         activation = activation,
         activation_index = activation_index,
         legacy_cleanup = legacy_cleanup,
@@ -799,7 +837,7 @@ ownership_ir_lower_binding :: proc(
                     place := ownership_ir_add_shadow_place(
                         lowering,
                         name,
-                        "__owned_union_result",
+                        "",
                         .Always,
                         -1,
                         .None,
@@ -819,6 +857,10 @@ ownership_ir_lower_binding :: proc(
                                 name,
                             ),
                         diagnose_use_after_transfer = true,
+                        cleanup_kind = .Owned_Union_Result,
+                        cleanup_form = binding.value,
+                        cleanup_result_index = result_index,
+                        cleanup_result_count = result_count,
                     )
                     append(scope_places, place)
                     acquired_place = true
@@ -891,6 +933,7 @@ ownership_ir_lower_binding :: proc(
                     binding.target_span,
                     cleanup_skip_reason = cleanup_skip_reason,
                     diagnose_use_after_transfer = true,
+                    cleanup_kind = .Call,
                 )
                 delete(cleanup_head)
                 append(scope_places, place)
@@ -1548,7 +1591,7 @@ ownership_ir_add_struct_field_place :: proc(
     place := ownership_ir_add_shadow_place(
         lowering,
         place_name,
-        "delete",
+        "",
         .Always,
         -1,
         .None,
@@ -1558,6 +1601,7 @@ ownership_ir_add_struct_field_place :: proc(
         binding.name,
         cleanup_unsupported,
         diagnose_use_after_transfer = true,
+        cleanup_kind = .Value,
     )
     lowering.result.places[place].aggregate_return_transfers_owner =
         aggregate_return_transfers_owner
@@ -2515,7 +2559,10 @@ ownership_ir_lower_call :: proc(
                 if event_kind == .Borrow {
                     for shadow_place in lowering.result.places {
                         if shadow_place.place == place &&
-                           (shadow_place.cleanup_head == head ||
+                           (ownership_ir_place_cleanup_matches_call(
+                                shadow_place,
+                                head,
+                            ) ||
                             (shadow_place.diagnose_unreleased &&
                              cleanup_call_head(head))) {
                             event_kind = .Destroy
@@ -2644,7 +2691,10 @@ ownership_ir_lower_call :: proc(
         event_kind := Ownership_IR_Event_Kind.Borrow
         for shadow_place in lowering.result.places {
             if shadow_place.place == place &&
-               (shadow_place.cleanup_head == head ||
+               (ownership_ir_place_cleanup_matches_call(
+                    shadow_place,
+                    head,
+                ) ||
                 (shadow_place.diagnose_unreleased &&
                  cleanup_call_head(head))) {
                 event_kind = .Destroy
@@ -2879,8 +2929,11 @@ ownership_ir_schedule_deferred_form :: proc(
         }
         for shadow_place in lowering.result.places {
             if shadow_place.place != place ||
-               (shadow_place.cleanup_head != head &&
-                !((shadow_place.cleanup_head != "" ||
+               (!ownership_ir_place_cleanup_matches_call(
+                    shadow_place,
+                    head,
+                ) &&
+                !((shadow_place.cleanup_kind != .None ||
                    shadow_place.diagnose_unreleased) &&
                   (head == "delete" || cleanup_call_head(head)))) {
                 continue
@@ -4161,7 +4214,7 @@ ownership_ir_build_cleanup_plan :: proc(
         return plan
     }
     for place in result.places {
-        if place.cleanup_head == "" && !place.diagnose_unreleased {
+        if place.cleanup_kind == .None && !place.diagnose_unreleased {
             continue
         }
         if place.place < 0 ||
@@ -4291,7 +4344,6 @@ ownership_ir_scope_cleanup_candidate :: proc(
 ) -> bool {
     placement, need := ownership_ir_cleanup_plan_placement(plan, place.place)
     if !plan.valid ||
-       !place.direct_imported_contract ||
        place.legacy_cleanup == .None ||
        ownership_ir_place_has_manual_or_transfer_event(result, place.place) ||
        placement != .Scope_Defer ||
@@ -4350,7 +4402,7 @@ ownership_ir_per_exit_candidate :: proc(
     placement, _ := ownership_ir_cleanup_plan_placement(plan, place.place)
     if !plan.valid ||
        (!place.direct_imported_contract && place.aggregate_root == "") ||
-       place.cleanup_head == "" ||
+       place.cleanup_kind == .None ||
        place.legacy_cleanup != .None ||
        placement != .Per_Exit {
         return false
@@ -4403,6 +4455,93 @@ ownership_ir_per_exit_candidate :: proc(
         }
     }
     return has_cleanup && has_skip
+}
+
+ownership_ir_emit_place_cleanup :: proc(
+    e: ^Emitter,
+    place: Ownership_IR_Shadow_Place,
+    deferred: bool,
+) -> bool {
+    #partial switch place.cleanup_kind {
+    case .Call:
+        if place.cleanup_head == "" || place.name == "" {
+            return false
+        }
+        prefix := "defer " if deferred else ""
+        emit_line_mapped(
+            e,
+            fmt.tprintf("%s%s(%s)", prefix, place.cleanup_head, place.name),
+            place.span,
+        )
+        return true
+    case .Value:
+        if place.ty == "" || place.name == "" {
+            return false
+        }
+        prefix := "defer " if deferred else ""
+        emit_line_mapped(
+            e,
+            fmt.tprintf(
+                "%s%s",
+                prefix,
+                ownership_destroy_value_text(e, place.ty, place.name),
+            ),
+            place.span,
+        )
+        return true
+    case .Owned_Union_Result:
+        return emit_owned_union_result_cleanup(
+            e,
+            place.cleanup_form,
+            place.cleanup_result_index,
+            place.cleanup_result_count,
+            place.name,
+            deferred,
+        )
+    case .None:
+        return false
+    }
+    return false
+}
+
+ownership_ir_emit_guarded_scope_cleanup :: proc(
+    e: ^Emitter,
+    place: Ownership_IR_Shadow_Place,
+    owner_flag: string,
+) -> bool {
+    if owner_flag == "" {
+        return false
+    }
+    #partial switch place.cleanup_kind {
+    case .Value:
+        if place.ty == "" || place.name == "" {
+            return false
+        }
+        emit_line_mapped(
+            e,
+            fmt.tprintf(
+                "defer (proc(kvist_place: ^%s, kvist_owner: ^bool) {{ if kvist_owner^ {{ %s }} }})(%s, &%s)",
+                place.ty,
+                ownership_destroy_value_text(e, place.ty, "kvist_place^"),
+                address_of_expr_text(place.name),
+                owner_flag,
+            ),
+            place.span,
+        )
+        return true
+    case .Owned_Union_Result:
+        return emit_owned_union_result_guarded_cleanup(
+            e,
+            place.cleanup_form,
+            place.cleanup_result_index,
+            place.cleanup_result_count,
+            place.name,
+            owner_flag,
+        )
+    case .Call, .None:
+        return false
+    }
+    return false
 }
 
 ownership_ir_plan_tracks_stored_owner :: proc(
@@ -4719,10 +4858,6 @@ ownership_ir_activate_bound_aggregate_places :: proc(
             e.current_ownership_plan^,
             place.place,
         )
-        owned_union_result := place.cleanup_head == "__owned_union_result"
-        if owned_union_result && placement == .Per_Exit {
-            continue
-        }
         if placement == .Per_Exit && need != .None {
             active := Ownership_IR_Active_Place{place = place.place}
             if ownership_ir_active_place_needs_owner_flag(e, place.place) {
@@ -4745,34 +4880,9 @@ ownership_ir_activate_bound_aggregate_places :: proc(
         if placement != .Scope_Defer || need == .None {
             continue
         }
-        result_index := -1
-        if owned_union_result {
-            for name, index in binding.pattern {
-                if name == place.aggregate_root {
-                    result_index = index
-                    break
-                }
-            }
-        }
         if need == .Always {
-            if owned_union_result && result_index >= 0 {
-                _ = emit_owned_union_result_cleanup(
-                    e,
-                    binding.value,
-                    result_index,
-                    len(binding.pattern),
-                    place.name,
-                    true,
-                )
-            } else {
-                emit_line_mapped(
-                    e,
-                    fmt.tprintf(
-                        "defer %s",
-                        ownership_destroy_value_text(e, place.ty, place.name),
-                    ),
-                    binding.target_span,
-                )
+            if !ownership_ir_emit_place_cleanup(e, place, true) {
+                continue
             }
         } else {
             if owner_flags[root_index] == "" {
@@ -4784,27 +4894,12 @@ ownership_ir_activate_bound_aggregate_places :: proc(
                 )
             }
             owner_flag := owner_flags[root_index]
-            if owned_union_result && result_index >= 0 {
-                _ = emit_owned_union_result_guarded_cleanup(
-                    e,
-                    binding.value,
-                    result_index,
-                    len(binding.pattern),
-                    place.name,
-                    owner_flag,
-                )
-            } else {
-                emit_line_mapped(
-                    e,
-                    fmt.tprintf(
-                        "defer (proc(kvist_place: ^%s, kvist_owner: ^bool) {{ if kvist_owner^ {{ %s }} }})(%s, &%s)",
-                        place.ty,
-                        ownership_destroy_value_text(e, place.ty, "kvist_place^"),
-                        address_of_expr_text(place.name),
-                        owner_flag,
-                    ),
-                    binding.target_span,
-                )
+            if !ownership_ir_emit_guarded_scope_cleanup(
+                e,
+                place,
+                owner_flag,
+            ) {
+                continue
             }
             append(
                 &e.ownership_active_per_exit_places,
@@ -4816,54 +4911,6 @@ ownership_ir_activate_bound_aggregate_places :: proc(
         }
         e.ownership_plan_adoptions += 1
     }
-}
-
-ownership_ir_current_plan_tracks_aggregate_field :: proc(
-    e: ^Emitter,
-    binding: Binding,
-    root, field_name: string,
-) -> bool {
-    if e == nil || e.current_ownership_shadow == nil ||
-       e.current_ownership_plan == nil ||
-       !e.current_ownership_plan.valid {
-        return false
-    }
-    for place in e.current_ownership_shadow.places {
-        if place.aggregate_root == root && place.name == field_name &&
-           place.span == binding.target_span &&
-           !place.aggregate_cleanup_unsupported {
-            return true
-        }
-    }
-    return false
-}
-
-ownership_ir_current_plan_tracks_union_result :: proc(
-    e: ^Emitter,
-    binding: Binding,
-    root: string,
-) -> bool {
-    if e == nil || e.current_ownership_shadow == nil ||
-       e.current_ownership_plan == nil ||
-       !e.current_ownership_plan.valid {
-        return false
-    }
-    for place in e.current_ownership_shadow.places {
-        if place.aggregate_root != root || place.name != root ||
-           place.span != binding.target_span ||
-           place.cleanup_head != "__owned_union_result" {
-            continue
-        }
-        if place.aggregate_cleanup_unsupported {
-            return true
-        }
-        placement, _ := ownership_ir_cleanup_plan_placement(
-            e.current_ownership_plan^,
-            place.place,
-        )
-        return placement != .Per_Exit
-    }
-    return false
 }
 
 ownership_ir_current_plan_tracks_stored_owner :: proc(
@@ -5068,26 +5115,23 @@ ownership_ir_emit_active_destroy_updates :: proc(
        form.items[0].kind != .Symbol {
         return
     }
-    cleanup_head := map_name(form.items[0].text)
-    defer delete(cleanup_head)
     for item in form.items[1:] {
         if item.kind != .Symbol {
             continue
         }
         name := map_name(item.text)
-        for place in e.current_ownership_shadow.places {
-            if place.name != name || place.cleanup_head != cleanup_head {
-                continue
-            }
-            active, found := ownership_ir_active_place(e, place.place)
-            if found && active.owner_flag != "" {
-                emit_line_mapped(
-                    e,
-                    fmt.tprintf("%s = false", active.owner_flag),
-                    item.span,
-                )
-            }
-            break
+        owner_flag, found := ownership_ir_active_event_owner_flag(
+            e,
+            name,
+            item.span,
+            .Destroy,
+        )
+        if found && owner_flag != "" {
+            emit_line_mapped(
+                e,
+                fmt.tprintf("%s = false", owner_flag),
+                item.span,
+            )
         }
         delete(name)
     }
@@ -5226,7 +5270,6 @@ ownership_ir_emit_active_edge_cleanups :: proc(
                action.need == .None {
                 continue
             }
-            cleanup := fmt.tprintf("%s(%s)", place.cleanup_head, place.name)
             if action.need == .Conditional {
                 active, has_active := ownership_ir_active_place(e, place.place)
                 if !has_active || active.owner_flag == "" {
@@ -5238,11 +5281,11 @@ ownership_ir_emit_active_edge_cleanups :: proc(
                     span,
                 )
                 e.indent += 1
-                emit_line_mapped(e, cleanup, span)
+                _ = ownership_ir_emit_place_cleanup(e, place, false)
                 e.indent -= 1
                 emit_line_mapped(e, "}", span)
             } else {
-                emit_line_mapped(e, cleanup, span)
+                _ = ownership_ir_emit_place_cleanup(e, place, false)
             }
             break
         }

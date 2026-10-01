@@ -229,72 +229,6 @@ emit_owned_aggregate_result_immediate_cleanup :: proc(
     return true
 }
 
-emit_owned_aggregate_result_scope_cleanup :: proc(
-    e: ^Emitter,
-    binding: Binding,
-    bindings: []Binding,
-    binding_index: int,
-    body: []CST_Form,
-    result_index: int,
-    value_name: string,
-) -> bool {
-    if value_name == "" {
-        return false
-    }
-    fields := proc_call_owned_result_fields_at(
-        e,
-        binding.value,
-        result_index,
-        len(binding.pattern),
-    )
-    defer delete_struct_field_slice(&fields)
-    if len(fields) == 0 {
-        return false
-    }
-    root_safe := destructured_result_cleanup_is_safe(
-        e,
-        bindings,
-        binding_index,
-        body,
-        value_name,
-    )
-    emitted := false
-    for offset in 0..<len(fields) {
-        field := fields[len(fields)-1-offset]
-        field_name := fmt.tprintf("%s.%s", value_name, field.name)
-        if ownership_ir_current_plan_tracks_aggregate_field(
-            e,
-            binding,
-            value_name,
-            field_name,
-        ) {
-            emitted = true
-            delete(field_name)
-            continue
-        }
-        if !root_safe {
-            delete(field_name)
-            continue
-        }
-        safe := destructured_result_cleanup_is_safe(
-            e,
-            bindings,
-            binding_index,
-            body,
-            field_name,
-        )
-        if safe {
-            emit_line(e, fmt.tprintf(
-                "defer %s",
-                ownership_destroy_value_text(e, field.ty, field_name),
-            ))
-            emitted = true
-        }
-        delete(field_name)
-    }
-    return emitted
-}
-
 emit_binding_assignment :: proc(e: ^Emitter, binding: Binding, value: string) {
     if binding.is_destructure {
         output_names: [dynamic]string
@@ -1708,37 +1642,6 @@ emit_managed_destructure_cleanup :: proc(
             len(binding.pattern),
         )
         if !known {
-            cleaned_aggregate := emit_owned_aggregate_result_scope_cleanup(
-                e,
-                binding,
-                bindings,
-                binding_index,
-                body,
-                idx,
-                name,
-            )
-            if !cleaned_aggregate &&
-               !ownership_ir_current_plan_tracks_union_result(
-                   e,
-                   binding,
-                   name,
-               ) &&
-               destructured_result_cleanup_is_safe(
-                   e,
-                   bindings,
-                   binding_index,
-                   body,
-                   name,
-               ) {
-                _ = emit_owned_union_result_cleanup(
-                    e,
-                    binding.value,
-                    idx,
-                    len(binding.pattern),
-                    name,
-                    true,
-                )
-            }
             continue
         }
         expected_cleanup := Ownership_IR_Cleanup_Need.Always
@@ -1801,10 +1704,6 @@ emit_managed_destructure_cleanup :: proc(
             result_lifecycle_delete(&lifecycle)
             continue
         }
-        // All non-candidates retain the legacy path while the ownership plan
-        // is introduced one proven-equivalent category at a time.
-        emit_result_lifecycle_cleanup(e, lifecycle, binding.pattern[:], idx)
-        lifecycle_cleanup_handled[idx] = true
         result_lifecycle_delete(&lifecycle)
     }
     if !binding.is_destructure {

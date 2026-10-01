@@ -1361,6 +1361,7 @@ ownership_ir_cleanup_plan_is_per_exit :: proc(t: ^testing.T) {
     append(&places, kvist.Ownership_IR_Shadow_Place{
         place = 0,
         name = "data",
+        cleanup_kind = .Call,
         cleanup_head = "delete",
         scope_exits = scope_exits,
     })
@@ -1445,6 +1446,7 @@ ownership_ir_cleanup_plan_exposes_structured_diagnostics :: proc(
     append(&places, kvist.Ownership_IR_Shadow_Place{
         place = 0,
         name = "data",
+        cleanup_kind = .Call,
         cleanup_head = "delete",
         cleanup_skip_reason = .Captured_By_Closure,
         scope_exits = scope_exits,
@@ -4781,6 +4783,11 @@ direct_owned_struct_fields_are_cleaned_and_overwrites_are_diagnosed :: proc(
   (let [outer (make-nested)]
     (count outer.inner.text)))
 
+(defn explicitly-clean [] -> int
+  (let [owned (Owned :text (clone-string "explicit"))]
+    (defer (delete owned.text))
+    (count owned.text)))
+
 (defn replace [] -> int
   (let [owned (Owned :text (clone-string "first"))]
     (set! owned.text (clone-string "second"))
@@ -4809,10 +4816,16 @@ direct_owned_struct_fields_are_cleaned_and_overwrites_are_diagnosed :: proc(
         )
     }
     clean_start := strings.index(result.output, "clean :: proc")
+    explicit_start := strings.index(result.output, "explicitly_clean :: proc")
     replace_start := strings.index(result.output, "replace :: proc")
-    testing.expect(t, clean_start >= 0 && replace_start > clean_start)
-    if clean_start >= 0 && replace_start > clean_start {
-        clean_output := result.output[clean_start:replace_start]
+    testing.expect(
+        t,
+        clean_start >= 0 && explicit_start > clean_start &&
+            replace_start > explicit_start,
+    )
+    if clean_start >= 0 && explicit_start > clean_start &&
+       replace_start > explicit_start {
+        clean_output := result.output[clean_start:explicit_start]
         testing.expect_value(
             t,
             strings.contains(clean_output, "defer delete(owned.text)"),
@@ -4822,6 +4835,12 @@ direct_owned_struct_fields_are_cleaned_and_overwrites_are_diagnosed :: proc(
             t,
             strings.count(clean_output, "defer delete(outer.inner.text)"),
             2,
+        )
+        explicit_output := result.output[explicit_start:replace_start]
+        testing.expect_value(
+            t,
+            strings.count(explicit_output, "defer delete(owned.text)"),
+            1,
         )
     }
 }
