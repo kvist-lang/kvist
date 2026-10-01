@@ -599,13 +599,25 @@ ownership_ir_lower_discarded_result :: proc(
         lowering.emitter,
         form,
     )
+    has_aggregate_result_fields := form_has_owned_aggregate_result_fields(
+        lowering.emitter,
+        form,
+    )
+    has_union_result_variant := form_has_owned_union_result_variant(
+        lowering.emitter,
+        form,
+    )
     diagnose :=
         form_requires_explicit_owned_cleanup(form, lowering.emitter) &&
         !has_result_lifecycle &&
+        !has_aggregate_result_fields &&
+        !has_union_result_variant &&
         !form_supports_automatic_native_delete(form, lowering.emitter)
     handled :=
         (form_requires_owned_discard_cleanup(lowering.emitter, form) ||
-         has_result_lifecycle) &&
+         has_result_lifecycle ||
+         has_aggregate_result_fields ||
+         has_union_result_variant) &&
                !diagnose
     if !diagnose && !handled {
         return
@@ -1126,6 +1138,127 @@ proc_call_owned_result_fields :: proc(
         }
     }
     return fields
+}
+
+proc_call_owned_result_fields_at :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    result_index, result_count: int,
+) -> (fields: [dynamic]Struct_Field) {
+    if result_count == 1 && result_index == 0 {
+        return proc_call_owned_result_fields(e, form)
+    }
+    if e == nil || form.kind != .List || len(form.items) == 0 ||
+       form.items[0].kind != .Symbol || result_index < 0 ||
+       result_index >= result_count {
+        return fields
+    }
+    head := form.items[0].text
+    if head == "if" && len(form.items) == 4 {
+        then_fields := proc_call_owned_result_fields_at(
+            e,
+            form.items[2],
+            result_index,
+            result_count,
+        )
+        defer delete_struct_field_slice(&then_fields)
+        else_fields := proc_call_owned_result_fields_at(
+            e,
+            form.items[3],
+            result_index,
+            result_count,
+        )
+        defer delete_struct_field_slice(&else_fields)
+        if ownership_ir_struct_fields_match(then_fields[:], else_fields[:]) {
+            fields = clone_struct_field_slice(then_fields[:])
+        }
+        return fields
+    }
+    if (head == "do" || head == "block") && len(form.items) >= 2 {
+        return proc_call_owned_result_fields_at(
+            e,
+            form.items[len(form.items)-1],
+            result_index,
+            result_count,
+        )
+    }
+    _, proc_decl, ok_proc := resolve_proc_call_decl(e, head)
+    if !ok_proc || proc_decl == nil {
+        return fields
+    }
+    return_struct, ok_struct := proc_struct_return_at(
+        e,
+        proc_decl,
+        result_index,
+        result_count,
+    )
+    if !ok_struct {
+        return fields
+    }
+    owned_fields, known, uncertain :=
+        proc_decl_infer_owned_result_fields_at(
+            e,
+            proc_decl,
+            result_index,
+            result_count,
+        )
+    defer delete(owned_fields)
+    if !known || uncertain {
+        return fields
+    }
+    for field_index in owned_fields {
+        if field_index >= 0 && field_index < len(return_struct.fields) {
+            ownership_ir_append_owned_leaf_fields(
+                e,
+                return_struct.fields[field_index],
+                "",
+                &fields,
+            )
+        }
+    }
+    return fields
+}
+
+proc_call_owned_union_result_variant_at :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    result_index, result_count: int,
+) -> (union_type, variant_type: string, ok: bool) {
+    if e == nil || form.kind != .List || len(form.items) == 0 ||
+       form.items[0].kind != .Symbol || result_index < 0 ||
+       result_index >= result_count {
+        return "", "", false
+    }
+    head := form.items[0].text
+    _, proc_decl, ok_proc := resolve_proc_call_decl(e, head)
+    if !ok_proc || proc_decl == nil || len(proc_decl.body) == 0 {
+        return "", "", false
+    }
+    return_union, ok_union := proc_union_return_at(
+        e,
+        proc_decl,
+        result_index,
+        result_count,
+    )
+    if !ok_union {
+        return "", "", false
+    }
+    for prefix_form in proc_decl.body[:len(proc_decl.body)-1] {
+        if result_form_contains_return(prefix_form) {
+            return "", "", false
+        }
+    }
+    variant, known := infer_owned_union_result_variant(
+        e,
+        proc_decl.body[len(proc_decl.body)-1],
+        return_union,
+        result_index,
+        result_count,
+    )
+    if !known {
+        return "", "", false
+    }
+    return strings.clone(return_union.name), strings.clone(variant.ty), true
 }
 
 ownership_ir_append_owned_leaf_fields :: proc(

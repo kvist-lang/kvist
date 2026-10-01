@@ -47,6 +47,14 @@
   -> [left-result: string, right-result: string]
   (return (strings.clone left) (strings.clone right)))
 
+(defn- clone-owned-value-result [value: string]
+  -> [result: Owned-Value, ok: bool]
+  (return (Owned-Value :value (strings.clone value)) true))
+
+(defn- clone-text-choice-result [value: string]
+  -> [result: Text-Choice, ok: bool]
+  (return (Text-Choice :text (strings.clone value)) true))
+
 (defn- replace-text-result [value: string old: string new: string]
   -> [allocated?: bool, result: string]
   (let [[replaced did-allocate?] (strings.replace value old new -1)]
@@ -69,6 +77,15 @@
   -> [allocated?: bool, result: string]
   (let [[replaced did-allocate?] (strings.replace value "z" "x" -1)]
     (toggle! did-allocate?)
+    (return did-allocate? replaced)))
+
+(defn- invert-bool! [value: ^bool]
+  (toggle! value^))
+
+(defn- replace-text-with-pointer-mutated-condition [value: string]
+  -> [allocated?: bool, result: string]
+  (let [[replaced did-allocate?] (strings.replace value "z" "x" -1)]
+    (invert-bool! (addr did-allocate?))
     (return did-allocate? replaced)))
 
 (defn- clone-owned [value: string] -> Owned-Value
@@ -219,19 +236,42 @@
     (t.is marked-owned?)
     (t.is (= value "hello"))))
 
+(t.deftest conditional-owned-result-rejects-an-address-escaped-sibling
+  (let [[marked-owned? value]
+          (replace-text-with-pointer-mutated-condition "hello")]
+    (t.is marked-owned?)
+    (t.is (= value "hello"))))
+
 (t.deftest discarded-owned-results-are-cleaned-immediately
   (discard (strings.clone "expression-discard"))
   (discard (clone-text-pair-results "discard-left" "discard-right"))
   (discard (strings.replace "hello" "e" "a" -1))
+  (clone-owned-value-result "implicit-aggregate-discard")
+  (discard (clone-owned-value-result "explicit-aggregate-discard"))
+  (clone-text-choice-result "implicit-union-discard")
+  (discard (clone-text-choice-result "explicit-union-discard"))
   (let [_ (strings.clone "simple-discard")
         [_ right] (clone-text-pair-results "left" "right")
         [_ unchanged-allocated?] (strings.replace "hello" "z" "x" -1)
         [_ changed-allocated?] (strings.replace "hello" "e" "a" -1)
         [_ _] (strings.replace "hello" "e" "a" -1)
+        [_ aggregate-ok]
+          (clone-owned-value-result "binding-aggregate-discard")
+        [retained retained-ok]
+          (clone-owned-value-result "retained-aggregate")
+        [_ union-ok] (clone-text-choice-result "binding-union-discard")
+        [retained-union retained-union-ok]
+          (clone-text-choice-result "retained-union")
         [_ comments-ok] (pull-comments true)]
     (t.is (= right "right"))
     (t.is (not unchanged-allocated?))
     (t.is changed-allocated?)
+    (t.is aggregate-ok)
+    (t.is retained-ok)
+    (t.is (= retained.value "retained-aggregate"))
+    (t.is union-ok)
+    (t.is retained-union-ok)
+    (t.is (= (case retained-union (string value) value "") "retained-union"))
     (t.is comments-ok)))
 
 (t.deftest owned-managed-multi-result-moves-into-returned-struct

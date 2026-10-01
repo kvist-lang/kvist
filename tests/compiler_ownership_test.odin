@@ -232,12 +232,24 @@ conditional_owned_result_rejects_a_mutated_activation_sibling :: proc(
     (toggle! did-allocate?)
     (return did-allocate? value)))
 
+(defn invert-bool! [value: ^bool]
+  (toggle! value^))
+
+(defn replace-pointer-inverted [source: string old: string new: string]
+  -> [allocated?: bool, result: string]
+  (let [[value did-allocate?] (strings.replace source old new -1)]
+    (invert-bool! (addr did-allocate?))
+    (return did-allocate? value)))
+
 (defn use [] -> int
   (let [[allocated? value] (replace-inverted "hello" "z" "x")
-        [toggle-allocated? toggle-value] (replace-toggled "hello" "z" "x")]
+        [toggle-allocated? toggle-value] (replace-toggled "hello" "z" "x")
+        [pointer-allocated? pointer-value]
+          (replace-pointer-inverted "hello" "z" "x")]
     (assert allocated?)
     (assert toggle-allocated?)
-    (+ (count value) (count toggle-value))))`
+    (assert pointer-allocated?)
+    (+ (count value) (count toggle-value) (count pointer-value))))`
     result, err, ok := kvist.compile_source_with_map(source)
     testing.expect_value(t, ok, true)
     if !ok {
@@ -254,6 +266,11 @@ conditional_owned_result_rejects_a_mutated_activation_sibling :: proc(
         strings.contains(result.output, "delete(toggle_value)"),
         false,
     )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "delete(pointer_value)"),
+        false,
+    )
 }
 
 @(test)
@@ -263,20 +280,43 @@ discarded_owned_results_are_materialized_and_cleaned_immediately :: proc(
     source := `(package app)
 (import strings "core:strings")
 
+(defstruct Box [text: string])
+(defunion Choice [text: string number: int])
+
 (defn clone-pair [left: string right: string]
   -> [left-result: string, right-result: string]
   (return (strings.clone left) (strings.clone right)))
+
+(defn make-box [] -> [box: Box, ok: bool]
+  (return (Box :text (strings.clone "box")) true))
+
+(defn make-choice [] -> [choice: Choice, ok: bool]
+  (return (Choice :text (strings.clone "choice")) true))
 
 (defn use [] -> int
   (discard (strings.clone "expression"))
   (discard (clone-pair "discard-left" "discard-right"))
   (discard (strings.replace "hello" "e" "a" -1))
+  (make-box)
+  (discard (make-box))
+  (make-choice)
+  (discard (make-choice))
   (let [_ (strings.clone "simple")
         [_ right] (clone-pair "left" "right")
         [_ allocated?] (strings.replace "hello" "e" "a" -1)
-        [_ _] (strings.replace "hello" "e" "a" -1)]
+        [_ _] (strings.replace "hello" "e" "a" -1)
+        [_ box-ok] (make-box)
+        [box retained-box-ok] (make-box)
+        [_ choice-ok] (make-choice)
+        [choice retained-choice-ok] (make-choice)]
     (assert allocated?)
-    (count right)))`
+    (assert box-ok)
+    (assert retained-box-ok)
+    (assert choice-ok)
+    (assert retained-choice-ok)
+    (+ (count right)
+       (count box.text)
+       (count (case choice (string value) value "")))))`
     result, err, ok := kvist.compile_source_with_map(source)
     testing.expect_value(t, ok, true)
     if !ok {
@@ -300,6 +340,10 @@ discarded_owned_results_are_materialized_and_cleaned_immediately :: proc(
         false,
     )
     testing.expect_value(t, strings.contains(result.output, "_, right :="), false)
+    testing.expect_value(t, strings.contains(result.output, ".text)"), true)
+    testing.expect_value(t, strings.contains(result.output, "defer delete(box.text)"), true)
+    testing.expect_value(t, strings.contains(result.output, "#partial switch"), true)
+    testing.expect_value(t, strings.contains(result.output, "case string:"), true)
 }
 
 @(test)

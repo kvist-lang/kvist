@@ -418,6 +418,49 @@ body_assigns_name :: proc(forms: []CST_Form, name: string) -> bool {
     return false
 }
 
+form_may_mutate_name :: proc(form: CST_Form, name: string) -> bool {
+    if form_assigns_name(form, name) {
+        return true
+    }
+    if form.kind != .List &&
+       form.kind != .Vector &&
+       form.kind != .Brace &&
+       form.kind != .Set {
+        return false
+    }
+    if form.kind == .List && len(form.items) > 0 &&
+       form.items[0].kind == .Symbol {
+        head := form.items[0].text
+        if head == "fn" || head == "quote" || head == "quasiquote" {
+            return false
+        }
+        if head == "addr" && len(form.items) == 2 &&
+           form.items[1].kind == .Symbol {
+            target := map_name(form.items[1].text)
+            matches := target == name
+            delete(target)
+            if matches {
+                return true
+            }
+        }
+    }
+    for item in form.items {
+        if form_may_mutate_name(item, name) {
+            return true
+        }
+    }
+    return false
+}
+
+body_may_mutate_name :: proc(forms: []CST_Form, name: string) -> bool {
+    for form in forms {
+        if form_may_mutate_name(form, name) {
+            return true
+        }
+    }
+    return false
+}
+
 later_bindings_transfer_name :: proc(
     e: ^Emitter,
     bindings: []Binding,
@@ -1066,6 +1109,16 @@ aggregate_result_value_is_owned :: proc(
             )
         }
     }
+    lifecycle, known_lifecycle := infer_result_lifecycle(e, form, 0, 1)
+    if known_lifecycle {
+        owned := result_lifecycle_is_owned(lifecycle)
+        result_lifecycle_delete(&lifecycle)
+        if owned {
+            return true
+        }
+    } else {
+        result_lifecycle_delete(&lifecycle)
+    }
     return form_produces_owned_value(form, e)
 }
 
@@ -1439,19 +1492,21 @@ aggregate_result_body_transfers_name :: proc(
            composite_value_transfers_owned_name(e, tail, name)
 }
 
-proc_single_struct_return :: proc(
+proc_struct_return_at :: proc(
     e: ^Emitter,
     proc_decl: ^Proc_Decl,
+    result_index, result_count: int,
 ) -> (^Struct_Decl, bool) {
-    if proc_decl == nil {
+    if proc_decl == nil || result_index < 0 || result_index >= result_count {
         return nil, false
     }
     return_ty := ""
-    if proc_decl.returns.kind == .Single {
+    if proc_decl.returns.kind == .Single && result_count == 1 &&
+       result_index == 0 {
         return_ty = proc_decl.returns.single_ty
     } else if proc_decl.returns.kind == .Named &&
-              len(proc_decl.returns.named) == 1 {
-        return_ty = proc_decl.returns.named[0].ty
+              len(proc_decl.returns.named) == result_count {
+        return_ty = proc_decl.returns.named[result_index].ty
     } else {
         return nil, false
     }
@@ -1460,6 +1515,148 @@ proc_single_struct_return :: proc(
         return nil, false
     }
     return struct_decl, true
+}
+
+proc_single_struct_return :: proc(
+    e: ^Emitter,
+    proc_decl: ^Proc_Decl,
+) -> (^Struct_Decl, bool) {
+    return proc_struct_return_at(e, proc_decl, 0, 1)
+}
+
+proc_union_return_at :: proc(
+    e: ^Emitter,
+    proc_decl: ^Proc_Decl,
+    result_index, result_count: int,
+) -> (^Union_Decl, bool) {
+    if proc_decl == nil || result_index < 0 || result_index >= result_count {
+        return nil, false
+    }
+    return_ty := ""
+    if proc_decl.returns.kind == .Single && result_count == 1 &&
+       result_index == 0 {
+        return_ty = proc_decl.returns.single_ty
+    } else if proc_decl.returns.kind == .Named &&
+              len(proc_decl.returns.named) == result_count {
+        return_ty = proc_decl.returns.named[result_index].ty
+    } else {
+        return nil, false
+    }
+    return find_union_decl(e, strings.trim_space(return_ty))
+}
+
+infer_owned_union_result_variant :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    return_union: ^Union_Decl,
+    result_index, result_count: int,
+    depth: int = 0,
+) -> (^Union_Variant, bool) {
+    if depth > 16 || return_union == nil || result_index < 0 ||
+       result_index >= result_count || form.kind != .List ||
+       len(form.items) == 0 || form.items[0].kind != .Symbol {
+        return nil, false
+    }
+    head := form.items[0].text
+    switch head {
+    case "return":
+        returned_value_index := 1
+        if len(form.items) == result_count+1 {
+            returned_value_index = result_index+1
+        } else if len(form.items) != 2 || result_count != 1 {
+            return nil, false
+        }
+        return infer_owned_union_result_variant(
+            e,
+            form.items[returned_value_index],
+            return_union,
+            result_index,
+            result_count,
+            depth+1,
+        )
+    case "do", "block":
+        if len(form.items) < 2 {
+            return nil, false
+        }
+        for prefix_form in form.items[1:len(form.items)-1] {
+            if result_form_contains_return(prefix_form) {
+                return nil, false
+            }
+        }
+        return infer_owned_union_result_variant(
+            e,
+            form.items[len(form.items)-1],
+            return_union,
+            result_index,
+            result_count,
+            depth+1,
+        )
+    case "if":
+        if len(form.items) != 4 || result_form_contains_return(form.items[1]) {
+            return nil, false
+        }
+        then_variant, then_known := infer_owned_union_result_variant(
+            e,
+            form.items[2],
+            return_union,
+            result_index,
+            result_count,
+            depth+1,
+        )
+        if !then_known {
+            return nil, false
+        }
+        else_variant, else_known := infer_owned_union_result_variant(
+            e,
+            form.items[3],
+            return_union,
+            result_index,
+            result_count,
+            depth+1,
+        )
+        return then_variant,
+               else_known && then_variant.name == else_variant.name &&
+               then_variant.ty == else_variant.ty
+    }
+
+    mapped_head := map_name(head)
+    defer delete(mapped_head)
+    if mapped_head != return_union.name {
+        return nil, false
+    }
+    value_index := 1
+    variant: ^Union_Variant
+    if len(form.items) == 3 {
+        variant_name, ok_name := brace_key_name(form.items[1])
+        if !ok_name {
+            return nil, false
+        }
+        value_index = 2
+        for &candidate in return_union.variants {
+            if candidate.name == variant_name {
+                variant = &candidate
+                break
+            }
+        }
+    } else if len(form.items) == 2 {
+        matches := 0
+        for &candidate in return_union.variants {
+            if literal_matches_struct_field_type(e, candidate.ty, form.items[1]) {
+                variant = &candidate
+                matches += 1
+            }
+        }
+        if matches != 1 {
+            return nil, false
+        }
+    } else {
+        return nil, false
+    }
+    if variant == nil || !type_supports_automatic_native_delete(variant.ty) ||
+       !aggregate_result_value_is_owned(e, form.items[value_index], nil) {
+        return nil, false
+    }
+    return variant, true
 }
 
 aggregate_result_owned_fields :: proc(
@@ -1472,8 +1669,11 @@ aggregate_result_owned_fields :: proc(
     uncertain_aggregate_names: []string,
     uncertain: ^bool,
     depth: int = 0,
+    result_index: int = 0,
+    result_count: int = 1,
 ) -> (fields: [dynamic]int, known: bool) {
-    if depth > 16 || return_struct == nil {
+    if depth > 16 || return_struct == nil || result_index < 0 ||
+       result_index >= result_count {
         return fields, false
     }
     if form.kind == .Symbol {
@@ -1500,12 +1700,15 @@ aggregate_result_owned_fields :: proc(
     head := form.items[0].text
     switch head {
     case "return":
-        if len(form.items) != 2 {
+        returned_value_index := 1
+        if len(form.items) == result_count+1 {
+            returned_value_index = result_index+1
+        } else if len(form.items) != 2 || result_count != 1 {
             return fields, false
         }
         return aggregate_result_owned_fields(
             e,
-            form.items[1],
+            form.items[returned_value_index],
             return_struct,
             owned_names,
             aggregate_names,
@@ -1513,6 +1716,8 @@ aggregate_result_owned_fields :: proc(
             uncertain_aggregate_names,
             uncertain,
             depth+1,
+            result_index,
+            result_count,
         )
     case "do", "block":
         if len(form.items) < 2 {
@@ -1554,6 +1759,8 @@ aggregate_result_owned_fields :: proc(
             uncertain_aggregate_names,
             uncertain,
             depth+1,
+            result_index,
+            result_count,
         )
     case "if":
         if len(form.items) != 4 {
@@ -1584,6 +1791,8 @@ aggregate_result_owned_fields :: proc(
             uncertain_aggregate_names,
             uncertain,
             depth+1,
+            result_index,
+            result_count,
         )
         defer delete(then_fields)
         if !then_known {
@@ -1599,6 +1808,8 @@ aggregate_result_owned_fields :: proc(
             uncertain_aggregate_names,
             uncertain,
             depth+1,
+            result_index,
+            result_count,
         )
         defer delete(else_fields)
         if !else_known ||
@@ -1744,6 +1955,8 @@ aggregate_result_owned_fields :: proc(
             scoped_uncertain_aggregate_names[:],
             uncertain,
             depth+1,
+            result_index,
+            result_count,
         )
     }
 
@@ -1803,11 +2016,17 @@ aggregate_result_owned_fields :: proc(
     return fields, false
 }
 
-proc_decl_infer_owned_result_fields :: proc(
+proc_decl_infer_owned_result_fields_at :: proc(
     e: ^Emitter,
     proc_decl: ^Proc_Decl,
+    result_index, result_count: int,
 ) -> (fields: [dynamic]int, known, uncertain: bool) {
-    return_struct, ok_struct := proc_single_struct_return(e, proc_decl)
+    return_struct, ok_struct := proc_struct_return_at(
+        e,
+        proc_decl,
+        result_index,
+        result_count,
+    )
     if !ok_struct || len(proc_decl.body) == 0 {
         return fields, false, uncertain
     }
@@ -1848,8 +2067,17 @@ proc_decl_infer_owned_result_fields :: proc(
         nil,
         nil,
         &uncertain,
+        result_index = result_index,
+        result_count = result_count,
     )
     return inferred_fields, inferred, uncertain
+}
+
+proc_decl_infer_owned_result_fields :: proc(
+    e: ^Emitter,
+    proc_decl: ^Proc_Decl,
+) -> (fields: [dynamic]int, known, uncertain: bool) {
+    return proc_decl_infer_owned_result_fields_at(e, proc_decl, 0, 1)
 }
 
 infer_proc_lifetime_facts :: proc(e: ^Emitter) {
