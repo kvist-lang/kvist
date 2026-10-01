@@ -682,6 +682,7 @@ replace_generated_package_placeholders :: proc(
 write_generated_package_artifacts :: proc(
     artifacts: []kvist.Generated_Package_Artifact,
     artifact_root: string,
+    source_path: string,
 ) -> bool {
     if len(artifacts) == 0 {
         return true
@@ -708,13 +709,14 @@ write_generated_package_artifacts :: proc(
             artifact.dependencies[:],
             "..",
         )
-        rebased, rebase_err, rebase_ok := kvist.rebase_emitted_odin_imports_for_output_path(
+        rebased, rebase_ok := prepare_generated_output(
             qualified,
             artifact_path,
+            artifact_root,
+            source_path,
         )
         delete(qualified)
         if !rebase_ok {
-            fmt.eprintln(rebase_err.message)
             delete(artifact_path)
             return false
         }
@@ -726,6 +728,164 @@ write_generated_package_artifacts :: proc(
         }
     }
     return true
+}
+
+copy_imported_kvist_runtime_packages :: proc(
+    source: string,
+    artifact_root: string,
+    roots: []string,
+) -> (output: string, ok: bool) {
+    current := strings.clone(source)
+    runtime_root, runtime_root_err := os.join_path(
+        {artifact_root, "kvist-runtime"},
+        context.allocator,
+    )
+    if runtime_root_err != nil {
+        delete(current)
+        return "", false
+    }
+    defer delete(runtime_root)
+
+    for root in roots {
+        entries, read_err := os.read_directory_by_path(
+            root,
+            -1,
+            context.allocator,
+        )
+        if read_err != nil {
+            continue
+        }
+        defer os.file_info_slice_delete(entries, context.allocator)
+        for entry in entries {
+            if entry.type != .Directory {
+                continue
+            }
+            package_source, source_err := os.join_path(
+                {root, entry.name},
+                context.allocator,
+            )
+            if source_err != nil {
+                continue
+            }
+            source_import := fmt.aprintf("%q", package_source)
+            if !strings.contains(current, source_import) {
+                delete(source_import)
+                delete(package_source)
+                continue
+            }
+            package_destination, destination_err := os.join_path(
+                {runtime_root, entry.name},
+                context.allocator,
+            )
+            if destination_err != nil {
+                delete(source_import)
+                delete(package_source)
+                delete(current)
+                return "", false
+            }
+            if os.make_directory_all(runtime_root) != nil &&
+               !os.exists(runtime_root) {
+                delete(package_destination)
+                delete(source_import)
+                delete(package_source)
+                delete(current)
+                return "", false
+            }
+            if os.exists(package_destination) {
+                if os.remove_all(package_destination) != nil {
+                    delete(package_destination)
+                    delete(source_import)
+                    delete(package_source)
+                    delete(current)
+                    return "", false
+                }
+            }
+            copy_err := os.copy_directory_all(
+                package_destination,
+                package_source,
+            )
+            if copy_err != nil {
+                fmt.eprintln(
+                    "failed to copy Kvist runtime package ",
+                    package_source,
+                    ": ",
+                    copy_err,
+                )
+                delete(package_destination)
+                delete(source_import)
+                delete(package_source)
+                delete(current)
+                return "", false
+            }
+            absolute_destination, absolute_err := os.get_absolute_path(
+                package_destination,
+                context.allocator,
+            )
+            if absolute_err != nil {
+                delete(package_destination)
+                delete(source_import)
+                delete(package_source)
+                delete(current)
+                return "", false
+            }
+            destination_import := fmt.aprintf("%q", absolute_destination)
+            replaced, allocated := strings.replace_all(
+                current,
+                source_import,
+                destination_import,
+                context.allocator,
+            )
+            if allocated {
+                delete(current)
+                current = replaced
+            }
+            delete(destination_import)
+            delete(absolute_destination)
+            delete(package_destination)
+            delete(source_import)
+            delete(package_source)
+        }
+    }
+    return current, true
+}
+
+prepare_generated_output_with_roots :: proc(
+    source, output_path, artifact_root: string,
+    roots: []string,
+) -> (output: string, ok: bool) {
+    portable, portable_ok := copy_imported_kvist_runtime_packages(
+        source,
+        artifact_root,
+        roots,
+    )
+    if !portable_ok {
+        fmt.eprintln("failed to copy imported Kvist runtime package")
+        return "", false
+    }
+    defer delete(portable)
+    rebased, rebase_err, rebase_ok :=
+        kvist.rebase_emitted_odin_imports_for_output_path(
+            portable,
+            output_path,
+        )
+    if !rebase_ok {
+        fmt.eprintln(rebase_err.message)
+        return "", false
+    }
+    return rebased, true
+}
+
+prepare_generated_output :: proc(
+    source, output_path, artifact_root, source_path: string,
+) -> (output: string, ok: bool) {
+    roots := kvist.kvist_source_package_roots(source_path)
+    defer kvist.delete_string_slice(&roots)
+    return prepare_generated_output_with_roots(
+        source,
+        output_path,
+        artifact_root,
+        roots[:],
+    )
 }
 
 write_generated_for_execution :: proc(
@@ -743,7 +903,11 @@ write_generated_for_execution :: proc(
             context.allocator,
         )
         if artifact_root_err != nil ||
-           !write_generated_package_artifacts(artifacts, artifact_root) {
+           !write_generated_package_artifacts(
+               artifacts,
+               artifact_root,
+               source_path,
+           ) {
             if artifact_root_err == nil {
                 delete(artifact_root)
             }
@@ -761,10 +925,14 @@ write_generated_for_execution :: proc(
             artifact_name,
         )
         delete(dependencies)
-        rebased, err_rebase, ok_rebase := kvist.rebase_emitted_odin_imports_for_output_path(qualified, requested_path)
+        rebased, ok_rebase := prepare_generated_output(
+            qualified,
+            requested_path,
+            artifact_root,
+            source_path,
+        )
         delete(qualified)
         if !ok_rebase {
-            fmt.eprintln(err_rebase.message)
             return "", "", "", false
         }
         write_output_or_exit(requested_path, rebased)
@@ -785,7 +953,11 @@ write_generated_for_execution :: proc(
             context.allocator,
         )
         if artifact_root_err != nil ||
-           !write_generated_package_artifacts(artifacts, artifact_root) {
+           !write_generated_package_artifacts(
+               artifacts,
+               artifact_root,
+               source_path,
+           ) {
             if artifact_root_err == nil {
                 delete(artifact_root)
             }
@@ -804,10 +976,14 @@ write_generated_for_execution :: proc(
             artifact_name,
         )
         delete(dependencies)
-        rebased, err_rebase, ok_rebase := kvist.rebase_emitted_odin_imports_for_output_path(qualified, generated)
+        rebased, ok_rebase := prepare_generated_output(
+            qualified,
+            generated,
+            artifact_root,
+            source_path,
+        )
         delete(qualified)
         if !ok_rebase {
-            fmt.eprintln(err_rebase.message)
             delete(generated)
             delete(package_build_dir)
             _ = os.remove_all(artifact_root)
@@ -843,7 +1019,11 @@ write_generated_for_execution :: proc(
 
     artifact_root, artifact_root_err := os.join_path({dir, "kvist-packages"}, context.allocator)
     if artifact_root_err != nil ||
-       !write_generated_package_artifacts(artifacts, artifact_root) {
+       !write_generated_package_artifacts(
+           artifacts,
+           artifact_root,
+           source_path,
+       ) {
         if artifact_root_err == nil {
             delete(artifact_root)
         }
@@ -864,10 +1044,14 @@ write_generated_for_execution :: proc(
         "kvist-packages",
     )
     delete(dependencies)
-    rebased, err_rebase, ok_rebase := kvist.rebase_emitted_odin_imports_for_output_path(qualified, generated)
+    rebased, ok_rebase := prepare_generated_output(
+        qualified,
+        generated,
+        artifact_root,
+        source_path,
+    )
     delete(qualified)
     if !ok_rebase {
-        fmt.eprintln(err_rebase.message)
         _ = os.remove(generated)
         _ = os.remove(dir)
         delete(generated)

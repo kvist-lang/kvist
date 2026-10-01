@@ -37,13 +37,14 @@ compile_file_command :: proc(input, output_path, map_path: string) {
         timing_report.generated_output_ms += duration_ms(generated_start)
     }
     if output_path != "" {
-        output, err_rebase, ok_rebase := kvist.rebase_emitted_odin_imports_for_output_path(result.output, output_path)
-        if !ok_rebase {
-            fmt.eprintln(err_rebase.message)
+        _, _, _, write_ok := write_generated_for_execution(
+            result.output,
+            output_path,
+            input,
+        )
+        if !write_ok {
             exit_with_timing(1)
         }
-        defer delete(output)
-        write_output_or_exit(output_path, output)
     } else {
         fmt.print(result.output)
     }
@@ -136,13 +137,14 @@ compile_eval_emit_command :: proc(input, eval_source, output_path: string, no_pr
         timing_report.generated_output_ms += duration_ms(generated_start)
     }
     if output_path != "" {
-        output, err_rebase, ok_rebase := kvist.rebase_emitted_odin_imports_for_output_path(result.output, output_path)
-        if !ok_rebase {
-            fmt.eprintln(err_rebase.message)
+        _, _, _, write_ok := write_generated_for_execution(
+            result.output,
+            output_path,
+            input,
+        )
+        if !write_ok {
             exit_with_timing(1)
         }
-        defer delete(output)
-        write_output_or_exit(output_path, output)
     } else {
         fmt.print(result.output)
     }
