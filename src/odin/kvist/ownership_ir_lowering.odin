@@ -30,11 +30,22 @@ Ownership_IR_Shadow_Cleanup_Kind :: enum {
     Owned_Union_Result,
 }
 
+Ownership_IR_Owner_Group_Binding :: struct {
+    name:        string,
+    owner_group: int,
+    span:        Span,
+}
+
+Ownership_IR_Projection :: struct {
+    owner_group: int,
+    path:        string,
+}
+
 Ownership_IR_Shadow_Place :: struct {
     place:                    int,
     name:                     string,
     ty:                       string,
-    aggregate_root:           string,
+    projection:               Ownership_IR_Projection,
     aggregate_cleanup_unsupported: bool,
     aggregate_cleanup_reassign_only: bool,
     aggregate_return_transfers_owner: bool,
@@ -65,6 +76,8 @@ Ownership_IR_Shadow_Proc :: struct {
     return_count:          int,
     graph:                 Ownership_IR_Proc,
     places:                [dynamic]Ownership_IR_Shadow_Place,
+    owner_group_count:     int,
+    owner_group_bindings:  [dynamic]Ownership_IR_Owner_Group_Binding,
     diagnostic_candidates: [dynamic]Ownership_IR_Diagnostic_Fact,
 }
 
@@ -109,6 +122,7 @@ Ownership_IR_Lowering :: struct {
     result:  Ownership_IR_Shadow_Proc,
     names:   [dynamic]Ownership_IR_Name_Binding,
     borrows: [dynamic]Ownership_IR_Name_Binding,
+    active_owner_group_bindings: [dynamic]int,
 }
 
 ownership_ir_shadow_proc_delete :: proc(result: ^Ownership_IR_Shadow_Proc) {
@@ -117,11 +131,15 @@ ownership_ir_shadow_proc_delete :: proc(result: ^Ownership_IR_Shadow_Proc) {
     for &place in result.places {
         delete(place.name)
         delete(place.ty)
-        delete(place.aggregate_root)
+        delete(place.projection.path)
         delete(place.cleanup_head)
         delete(place.scope_exits)
     }
     delete(result.places)
+    for &binding in result.owner_group_bindings {
+        delete(binding.name)
+    }
+    delete(result.owner_group_bindings)
     for &diagnostic in result.diagnostic_candidates {
         delete(diagnostic.subject)
     }
@@ -185,6 +203,7 @@ ownership_ir_lowering_delete :: proc(lowering: ^Ownership_IR_Lowering) {
         delete(binding.name)
     }
     delete(lowering.borrows)
+    delete(lowering.active_owner_group_bindings)
 }
 
 ownership_ir_lookup_name :: proc(
@@ -259,6 +278,147 @@ ownership_ir_bind_borrow_name :: proc(
         name = strings.clone(name),
         place = place,
     })
+}
+
+ownership_ir_owner_group_is_valid :: proc(
+    result: Ownership_IR_Shadow_Proc,
+    owner_group: int,
+) -> bool {
+    return owner_group > 0 && owner_group <= result.owner_group_count
+}
+
+ownership_ir_owner_group_has_name :: proc(
+    result: Ownership_IR_Shadow_Proc,
+    owner_group: int,
+    name: string,
+) -> bool {
+    if !ownership_ir_owner_group_is_valid(result, owner_group) {
+        return false
+    }
+    for binding in result.owner_group_bindings {
+        if binding.owner_group == owner_group && binding.name == name {
+            return true
+        }
+    }
+    return false
+}
+
+ownership_ir_shadow_owner_group_for_binding :: proc(
+    result: Ownership_IR_Shadow_Proc,
+    raw_name: string,
+    span: Span,
+) -> (int, bool) {
+    name := map_name(raw_name)
+    defer delete(name)
+    for index := len(result.owner_group_bindings)-1; index >= 0; index -= 1 {
+        binding := result.owner_group_bindings[index]
+        if binding.name == name && binding.span == span {
+            return binding.owner_group, true
+        }
+    }
+    return 0, false
+}
+
+ownership_ir_bind_owner_group :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    name: string,
+    span: Span,
+    owner_group: int,
+) {
+    if lowering == nil || name == "" ||
+       !ownership_ir_owner_group_is_valid(lowering.result, owner_group) {
+        return
+    }
+    mapped_name := map_name(name)
+    defer delete(mapped_name)
+    binding_index := -1
+    for index := len(lowering.result.owner_group_bindings)-1;
+        index >= 0;
+        index -= 1 {
+        existing := lowering.result.owner_group_bindings[index]
+        if existing.name == mapped_name && existing.span == span &&
+           existing.owner_group == owner_group {
+            binding_index = index
+            break
+        }
+    }
+    if binding_index < 0 {
+        append(
+            &lowering.result.owner_group_bindings,
+            Ownership_IR_Owner_Group_Binding{
+                name = strings.clone(mapped_name),
+                owner_group = owner_group,
+                span = span,
+            },
+        )
+        binding_index = len(lowering.result.owner_group_bindings)-1
+    }
+    append(&lowering.active_owner_group_bindings, binding_index)
+}
+
+ownership_ir_add_owner_group :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    name: string,
+    span: Span,
+) -> int {
+    lowering.result.owner_group_count += 1
+    owner_group := lowering.result.owner_group_count
+    ownership_ir_bind_owner_group(lowering, name, span, owner_group)
+    return owner_group
+}
+
+ownership_ir_lookup_owner_group :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    raw_name: string,
+) -> (int, bool) {
+    if lowering == nil || raw_name == "" {
+        return 0, false
+    }
+    name := map_name(raw_name)
+    defer delete(name)
+    for index := len(lowering.active_owner_group_bindings)-1;
+        index >= 0;
+        index -= 1 {
+        binding_index := lowering.active_owner_group_bindings[index]
+        binding := lowering.result.owner_group_bindings[binding_index]
+        if binding.name == name {
+            return binding.owner_group, true
+        }
+    }
+    return 0, false
+}
+
+ownership_ir_owner_group_for_binding :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    raw_name: string,
+    span: Span,
+) -> int {
+    if lowering == nil || raw_name == "" {
+        return 0
+    }
+    name := map_name(raw_name)
+    defer delete(name)
+    for index := len(lowering.active_owner_group_bindings)-1;
+        index >= 0;
+        index -= 1 {
+        binding_index := lowering.active_owner_group_bindings[index]
+        binding := lowering.result.owner_group_bindings[binding_index]
+        if binding.name == name && binding.span == span {
+            return binding.owner_group
+        }
+    }
+    return ownership_ir_add_owner_group(lowering, name, span)
+}
+
+ownership_ir_projection_path :: proc(name, root: string) -> string {
+    if name == root {
+        return ""
+    }
+    if len(name) > len(root)+1 &&
+       strings.has_prefix(name, root) && name[len(root)] == '.' {
+        return strings.clone(name[len(root)+1:])
+    }
+    return strings.clone(name)
 }
 
 ownership_ir_cleanup_head_for_lifecycle :: proc(
@@ -385,7 +545,8 @@ ownership_ir_add_shadow_place :: proc(
     direct_imported_contract: bool,
     span: Span,
     ty := "",
-    aggregate_root := "",
+    owner_group := 0,
+    projection_path := "",
     aggregate_cleanup_unsupported := false,
     cleanup_skip_reason := Ownership_IR_Cleanup_Skip_Reason.None,
     cleanup_scheduled := false,
@@ -403,7 +564,10 @@ ownership_ir_add_shadow_place :: proc(
         place = place,
         name = strings.clone(name),
         ty = strings.clone(ty),
-        aggregate_root = strings.clone(aggregate_root),
+        projection = {
+            owner_group = owner_group,
+            path = strings.clone(projection_path),
+        },
         aggregate_cleanup_unsupported = aggregate_cleanup_unsupported,
         cleanup_kind = cleanup_kind,
         cleanup_head = strings.clone(cleanup_head),
@@ -834,6 +998,11 @@ ownership_ir_lower_binding :: proc(
                         result_count,
                     )
                 if has_owned_union {
+                    owner_group := ownership_ir_owner_group_for_binding(
+                        lowering,
+                        name,
+                        binding.target_span,
+                    )
                     place := ownership_ir_add_shadow_place(
                         lowering,
                         name,
@@ -844,7 +1013,7 @@ ownership_ir_lower_binding :: proc(
                         false,
                         binding.target_span,
                         ty = union_type,
-                        aggregate_root = name,
+                        owner_group = owner_group,
                         aggregate_cleanup_unsupported =
                             later_binding_aliases_name(
                                 bindings,
@@ -963,6 +1132,7 @@ ownership_ir_lower_binding :: proc(
             lowering,
             binding.name,
             binding.value.text,
+            binding.target_span,
             bindings,
             binding_index,
             body,
@@ -1588,6 +1758,16 @@ ownership_ir_add_struct_field_place :: proc(
     field_reassigned := body_assigns_name(body, place_name)
     cleanup_unsupported := cleanup_unsupported_without_reassign ||
                            field_reassigned
+    owner_group := ownership_ir_owner_group_for_binding(
+        lowering,
+        binding.name,
+        binding.target_span,
+    )
+    projection_path := ownership_ir_projection_path(
+        place_name,
+        binding.name,
+    )
+    defer delete(projection_path)
     place := ownership_ir_add_shadow_place(
         lowering,
         place_name,
@@ -1597,9 +1777,10 @@ ownership_ir_add_struct_field_place :: proc(
         .None,
         false,
         binding.target_span,
-        field.ty,
-        binding.name,
-        cleanup_unsupported,
+        ty = field.ty,
+        owner_group = owner_group,
+        projection_path = projection_path,
+        aggregate_cleanup_unsupported = cleanup_unsupported,
         diagnose_use_after_transfer = true,
         cleanup_kind = .Value,
     )
@@ -1622,13 +1803,18 @@ ownership_ir_struct_field_store_place :: proc(
     // destination field. Reuse that place, but never cross a shadowing
     // boundary that happens to have the same mapped name.
     if binding.name != "" && field.name != "" {
+        owner_group := ownership_ir_owner_group_for_binding(
+            lowering,
+            binding.name,
+            binding.target_span,
+        )
         place_name := fmt.tprintf("%s.%s", binding.name, field.name)
         defer delete(place_name)
         if place, found := ownership_ir_lookup_name(
             lowering,
             place_name,
         ); found && place >= 0 && place < len(lowering.result.places) &&
-           lowering.result.places[place].aggregate_root == binding.name &&
+           lowering.result.places[place].projection.owner_group == owner_group &&
            lowering.result.places[place].span == binding.target_span {
             return place, true
         }
@@ -1648,26 +1834,23 @@ ownership_ir_add_aggregate_return_events :: proc(
     block: int,
     span: Span,
 ) {
-    mapped_root := map_name(root_name)
-    defer delete(mapped_root)
-    prefix := fmt.tprintf("%s.", mapped_root)
-    defer delete(prefix)
-    emitted: [dynamic]int
-    defer delete(emitted)
-    for binding in lowering.names {
-        if !strings.has_prefix(binding.name, prefix) ||
-           ownership_ir_int_slice_contains(emitted[:], binding.place) ||
-           binding.place < 0 ||
-           binding.place >= len(lowering.result.places) ||
-           !lowering.result.places[binding.place].aggregate_return_transfers_owner {
+    owner_group, found := ownership_ir_lookup_owner_group(
+        lowering,
+        root_name,
+    )
+    if !found {
+        return
+    }
+    for place in lowering.result.places {
+        if place.projection.owner_group != owner_group ||
+           !place.aggregate_return_transfers_owner {
             continue
         }
         _ = ownership_ir_add_event(
             &lowering.result.graph,
             block,
-            {kind = .Return, place = binding.place, span = span},
+            {kind = .Return, place = place.place, span = span},
         )
-        append(&emitted, binding.place)
     }
 }
 
@@ -1797,6 +1980,7 @@ ownership_ir_aggregate_alias_return_is_safe :: proc(
 ownership_ir_bind_aggregate_alias :: proc(
     lowering: ^Ownership_IR_Lowering,
     alias, source: string,
+    alias_span: Span,
     bindings: []Binding,
     binding_index: int,
     body: []CST_Form,
@@ -1806,26 +1990,30 @@ ownership_ir_bind_aggregate_alias :: proc(
     }
     mapped_source := map_name(source)
     defer delete(mapped_source)
-    prefix := fmt.tprintf("%s.", mapped_source)
-    defer delete(prefix)
-    initial_name_count := len(lowering.names)
+    owner_group, found := ownership_ir_lookup_owner_group(
+        lowering,
+        mapped_source,
+    )
+    if !found {
+        return
+    }
+    ownership_ir_bind_owner_group(
+        lowering,
+        alias,
+        alias_span,
+        owner_group,
+    )
     aliased_places: [dynamic]int
     defer delete(aliased_places)
-    for index in 0..<initial_name_count {
-        source_binding := lowering.names[index]
-        if !strings.has_prefix(source_binding.name, prefix) {
+    for place in lowering.result.places {
+        if place.projection.owner_group != owner_group ||
+           place.projection.path == "" {
             continue
         }
-        suffix := source_binding.name[len(mapped_source):]
-        alias_name := fmt.tprintf("%s%s", alias, suffix)
-        ownership_ir_bind_name(lowering, alias_name, source_binding.place)
+        alias_name := fmt.tprintf("%s.%s", alias, place.projection.path)
+        ownership_ir_bind_name(lowering, alias_name, place.place)
         delete(alias_name)
-        if !ownership_ir_int_slice_contains(
-            aliased_places[:],
-            source_binding.place,
-        ) {
-            append(&aliased_places, source_binding.place)
-        }
+        append(&aliased_places, place.place)
     }
     for place in aliased_places {
         if place < 0 || place >= len(lowering.result.places) ||
@@ -1862,16 +2050,12 @@ ownership_ir_cleanup_arg_root_name :: proc(
     return ownership_ir_cleanup_arg_root_name(form.items[1])
 }
 
-ownership_ir_has_aggregate_root :: proc(
+ownership_ir_has_owner_group :: proc(
     lowering: ^Ownership_IR_Lowering,
     root: string,
 ) -> bool {
-    for place in lowering.result.places {
-        if place.aggregate_root == root {
-            return true
-        }
-    }
-    return false
+    _, found := ownership_ir_lookup_owner_group(lowering, root)
+    return found
 }
 
 ownership_ir_call_has_tracked_aggregate_arg :: proc(
@@ -1883,7 +2067,7 @@ ownership_ir_call_has_tracked_aggregate_arg :: proc(
         if !ok_root {
             continue
         }
-        found := ownership_ir_has_aggregate_root(lowering, root)
+        found := ownership_ir_has_owner_group(lowering, root)
         delete(root)
         if found {
             return true
@@ -1902,11 +2086,13 @@ ownership_ir_store_tracked_aggregate :: proc(
         return
     }
     defer delete(root)
-    prefix := fmt.tprintf("%s.", root)
-    defer delete(prefix)
+    owner_group, found := ownership_ir_lookup_owner_group(lowering, root)
+    if !found {
+        return
+    }
     for place in lowering.result.places {
-        if place.aggregate_root != root ||
-           !strings.has_prefix(place.name, prefix) {
+        if place.projection.owner_group != owner_group ||
+           place.projection.path == "" {
             continue
         }
         _ = ownership_ir_add_event(
@@ -1933,11 +2119,13 @@ ownership_ir_add_tracked_aggregate_events :: proc(
         return
     }
     defer delete(root)
-    prefix := fmt.tprintf("%s.", root)
-    defer delete(prefix)
+    owner_group, found := ownership_ir_lookup_owner_group(lowering, root)
+    if !found {
+        return
+    }
     for place in lowering.result.places {
-        if place.aggregate_root != root ||
-           !strings.has_prefix(place.name, prefix) {
+        if place.projection.owner_group != owner_group ||
+           place.projection.path == "" {
             continue
         }
         _ = ownership_ir_add_event(
@@ -2032,13 +2220,17 @@ ownership_ir_add_aggregate_cleanup_events :: proc(
         if !ok_root {
             continue
         }
-        prefix := fmt.tprintf("%s.", root)
+        owner_group, found := ownership_ir_lookup_owner_group(lowering, root)
+        if !found {
+            delete(root)
+            continue
+        }
         for place in lowering.result.places {
-            if place.aggregate_root != root ||
-               !strings.has_prefix(place.name, prefix) {
+            if place.projection.owner_group != owner_group ||
+               place.projection.path == "" {
                 continue
             }
-            field_name := place.name[len(prefix):]
+            field_name := place.projection.path
             if !procedure_may_clean_parameter_field(
                    called_proc,
                    parameter_index,
@@ -2068,7 +2260,6 @@ ownership_ir_add_aggregate_cleanup_events :: proc(
                 },
             )
         }
-        delete(prefix)
         delete(root)
     }
 }
@@ -2226,12 +2417,34 @@ ownership_ir_lower_nested_struct_arg :: proc(
         scope_places,
         body,
     )
+    nested_group, has_nested_group := ownership_ir_lookup_owner_group(
+        lowering,
+        nested_name,
+    )
+    if !has_nested_group {
+        return true
+    }
+    outer_group := ownership_ir_owner_group_for_binding(
+        lowering,
+        binding.name,
+        binding.target_span,
+    )
+    ownership_ir_bind_owner_group(
+        lowering,
+        nested_name,
+        binding.target_span,
+        outer_group,
+    )
     for &place in lowering.result.places[place_start:] {
-        if place.aggregate_root != nested_name {
+        if place.projection.owner_group != nested_group {
             continue
         }
-        delete(place.aggregate_root)
-        place.aggregate_root = strings.clone(binding.name)
+        place.projection.owner_group = outer_group
+        delete(place.projection.path)
+        place.projection.path = ownership_ir_projection_path(
+            place.name,
+            binding.name,
+        )
         return_transfers_owner :=
             aggregate_result_body_transfers_name(
                 lowering.emitter,
@@ -3380,6 +3593,7 @@ ownership_ir_lower_form :: proc(
         defer delete(bindings)
         name_start := len(lowering.names)
         borrow_start := len(lowering.borrows)
+        owner_group_binding_start := len(lowering.active_owner_group_bindings)
         scope_places: [dynamic]int
         defer delete(scope_places)
         binding_block := block
@@ -3422,6 +3636,10 @@ ownership_ir_lower_form :: proc(
             delete(lowering.borrows[index].name)
         }
         resize(&lowering.borrows, borrow_start)
+        resize(
+            &lowering.active_owner_group_bindings,
+            owner_group_binding_start,
+        )
         return result
     case "if":
         if len(form.items) < 3 {
@@ -4401,7 +4619,7 @@ ownership_ir_per_exit_candidate :: proc(
 ) -> bool {
     placement, _ := ownership_ir_cleanup_plan_placement(plan, place.place)
     if !plan.valid ||
-       (!place.direct_imported_contract && place.aggregate_root == "") ||
+       (!place.direct_imported_contract && place.projection.owner_group == 0) ||
        place.cleanup_kind == .None ||
        place.legacy_cleanup != .None ||
        placement != .Per_Exit {
@@ -4566,7 +4784,7 @@ ownership_ir_plan_tracks_stored_owner :: proc(
                 }
             }
             if target_place == nil ||
-               target_place.aggregate_root == "" ||
+               target_place.projection.owner_group == 0 ||
                (target_place.aggregate_cleanup_unsupported &&
                 !target_place.aggregate_return_transfers_owner) {
                 continue
@@ -4822,35 +5040,45 @@ ownership_ir_activate_bound_aggregate_places :: proc(
        binding.defer_with_cleanup {
         return
     }
-    roots: [dynamic]string
+    owner_groups: [dynamic]int
     owner_flags: [dynamic]string
     defer {
-        delete(roots)
+        delete(owner_groups)
         delete(owner_flags)
     }
     if binding.is_destructure || binding.is_result_binding {
         for name in binding.pattern {
-            if name != "" {
-                append(&roots, name)
+            if owner_group, found := ownership_ir_shadow_owner_group_for_binding(
+                e.current_ownership_shadow^,
+                name,
+                binding.target_span,
+            ); found {
+                append(&owner_groups, owner_group)
                 append(&owner_flags, "")
             }
         }
     } else if binding.name != "" {
-        append(&roots, binding.name)
-        append(&owner_flags, "")
+        if owner_group, found := ownership_ir_shadow_owner_group_for_binding(
+            e.current_ownership_shadow^,
+            binding.name,
+            binding.target_span,
+        ); found {
+            append(&owner_groups, owner_group)
+            append(&owner_flags, "")
+        }
     }
-    if len(roots) == 0 {
+    if len(owner_groups) == 0 {
         return
     }
     for place in e.current_ownership_shadow.places {
-        root_index := -1
-        for root, index in roots {
-            if place.aggregate_root == root {
-                root_index = index
+        group_index := -1
+        for owner_group, index in owner_groups {
+            if place.projection.owner_group == owner_group {
+                group_index = index
                 break
             }
         }
-        if root_index < 0 || place.span != binding.target_span || place.ty == "" ||
+        if group_index < 0 || place.span != binding.target_span || place.ty == "" ||
            place.aggregate_cleanup_unsupported || place.cleanup_scheduled {
             continue
         }
@@ -4861,14 +5089,14 @@ ownership_ir_activate_bound_aggregate_places :: proc(
         if placement == .Per_Exit && need != .None {
             active := Ownership_IR_Active_Place{place = place.place}
             if ownership_ir_active_place_needs_owner_flag(e, place.place) {
-                if owner_flags[root_index] == "" {
-                    owner_flags[root_index] = managed_owner_flag_name(e)
+                if owner_flags[group_index] == "" {
+                    owner_flags[group_index] = managed_owner_flag_name(e)
                     emit_line(
                         e,
-                        fmt.tprintf("%s := true", owner_flags[root_index]),
+                        fmt.tprintf("%s := true", owner_flags[group_index]),
                     )
                 }
-                active.owner_flag = owner_flags[root_index]
+                active.owner_flag = owner_flags[group_index]
             }
             append(
                 &e.ownership_active_per_exit_places,
@@ -4885,15 +5113,15 @@ ownership_ir_activate_bound_aggregate_places :: proc(
                 continue
             }
         } else {
-            if owner_flags[root_index] == "" {
-                owner_flags[root_index] = managed_owner_flag_name(e)
+            if owner_flags[group_index] == "" {
+                owner_flags[group_index] = managed_owner_flag_name(e)
                 emit_line_mapped(
                     e,
-                    fmt.tprintf("%s := true", owner_flags[root_index]),
+                    fmt.tprintf("%s := true", owner_flags[group_index]),
                     binding.target_span,
                 )
             }
-            owner_flag := owner_flags[root_index]
+            owner_flag := owner_flags[group_index]
             if !ownership_ir_emit_guarded_scope_cleanup(
                 e,
                 place,
@@ -5045,8 +5273,15 @@ ownership_ir_active_event_place :: proc(
     if e == nil || e.current_ownership_shadow == nil {
         return -1, false
     }
+    mapped_name := map_name(name)
+    defer delete(mapped_name)
     for place in e.current_ownership_shadow.places {
-        if place.name == name || place.aggregate_root == name {
+        if place.name == mapped_name ||
+           ownership_ir_owner_group_has_name(
+               e.current_ownership_shadow^,
+               place.projection.owner_group,
+               mapped_name,
+           ) {
             for block in e.current_ownership_shadow.graph.blocks {
                 for event in block.events {
                     if event.place == place.place &&
