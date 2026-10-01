@@ -1392,8 +1392,38 @@ proc_decl_infers_owned_alloc_result_depth :: proc(e: ^Emitter, proc_decl: ^Proc_
     if !return_spec_matches_owned_alloc_kind(proc_decl.returns, kind) {
         return false
     }
-    return body_tail_infers_owned_alloc_result(proc_decl.body[:], nil, kind, e, depth+1) &&
-           body_all_returns_infer_owned_alloc_result(proc_decl.body[:], nil, kind, e, depth+1)
+    owned_names: [dynamic]string
+    defer {
+        for name in owned_names {
+            delete(name)
+        }
+        delete(owned_names)
+    }
+    for param in proc_decl.params {
+        if param.ownership != .Owned {
+            continue
+        }
+        append_automatic_native_delete_leaf_names(
+            e,
+            param.ty,
+            param.name,
+            &owned_names,
+        )
+    }
+    return body_tail_infers_owned_alloc_result(
+               proc_decl.body[:],
+               owned_names[:],
+               kind,
+               e,
+               depth+1,
+           ) &&
+           body_all_returns_infer_owned_alloc_result(
+               proc_decl.body[:],
+               owned_names[:],
+               kind,
+               e,
+               depth+1,
+           )
 }
 
 proc_decl_infers_owned_alloc_result :: proc(proc_decl: ^Proc_Decl, kind: Owned_Alloc_Result_Kind) -> bool {
@@ -1427,6 +1457,37 @@ proc_decl_may_return_owned_result :: proc(
             continue
         }
         scoped_names: [dynamic]string
+        for param, parameter_index in proc_decl.params {
+            parameter_leaf_names: [dynamic]string
+            append_automatic_native_delete_leaf_names(
+                e,
+                param.ty,
+                param.name,
+                &parameter_leaf_names,
+            )
+            prefix := fmt.tprintf("%s.", param.name)
+            ownership_evidenced := false
+            for leaf_name in parameter_leaf_names {
+                if strings.has_prefix(leaf_name, prefix) &&
+                   procedure_may_clean_parameter_field(
+                       proc_decl,
+                       parameter_index,
+                       leaf_name[len(prefix):],
+                   ) {
+                    ownership_evidenced = true
+                    break
+                }
+            }
+            delete(prefix)
+            if ownership_evidenced {
+                append(&scoped_names, ..parameter_leaf_names[:])
+            } else {
+                for leaf_name in parameter_leaf_names {
+                    delete(leaf_name)
+                }
+            }
+            delete(parameter_leaf_names)
+        }
         for form in proc_decl.body[:len(proc_decl.body)-1] {
             track_owned_assignment(form, &scoped_names, kind, e)
         }

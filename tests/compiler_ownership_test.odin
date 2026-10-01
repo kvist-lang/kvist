@@ -9,6 +9,51 @@ import "core:testing"
 import kvist "../src/odin/kvist"
 
 @(test)
+owned_managed_multi_result_moves_into_returned_struct :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import data "kvist:data")
+
+(defstruct Snapshot [comments: Data])
+
+(defn pull [] -> [comments: Data, ok: bool]
+  (return [{:id "comment-1"} {:id "comment-2"}] true))
+
+(defn load [] -> Snapshot
+  (let [[comments ok] (pull)]
+    (when (not ok)
+      (data.release comments)
+      (return (Snapshot :comments nil)))
+    (Snapshot :comments comments)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "Snapshot{comments ="), true)
+    testing.expect_value(
+        t,
+        strings.contains(
+            result.output,
+            "return Snapshot{comments = kvist_data_retain(comments)}",
+        ),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "kvist_data_release(kvist_place^)"),
+        true,
+    )
+}
+
+@(test)
 data_stored_in_data_aggregate_is_cleaned_after_the_aggregate_retains_it :: proc(
     t: ^testing.T,
 ) {
@@ -281,6 +326,166 @@ pod_struct_result_does_not_report_uncertain_owned_fields :: proc(
                 "uncertain across returns or mutations",
             ),
             false,
+        )
+    } else {
+        defer kvist.compile_error_delete(&lifetimes_err)
+        testing.expect_value(t, lifetimes_err.message, "")
+    }
+}
+
+@(test)
+owned_parameter_fields_transfer_to_scalar_results :: proc(t: ^testing.T) {
+    source := `(package app)
+
+(defstruct Pair [left: string right: string])
+(defstruct Inner [text: string])
+(defstruct Outer [inner: Inner])
+
+(defn make-pair [] -> Pair
+  (Pair :left (str "left") :right (str "right")))
+
+(defn take-left [value: Pair] -> string
+  (delete value.right)
+  value.left)
+
+(defn take-nested [value: Outer] -> string
+  value.inner.text)
+
+(defn take-left-through-alias [value: Pair] -> string
+  (let [result value.left]
+    (delete value.right)
+    result))
+
+(defn delete-text [value: string]
+  (delete value))
+
+(defn use [] -> int
+  (let [first (make-pair)
+        first-result (take-left first) :defer-with delete-text
+        nested (Outer :inner (Inner :text (str "nested")))
+        nested-result (take-nested nested) :defer-with delete-text
+        aliased (make-pair)
+        alias-result (take-left-through-alias aliased) :defer-with delete-text]
+    (+ (count first-result) (count nested-result) (count alias-result))))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(first.left)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(first.right)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(nested.inner.text)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(aliased.left)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(aliased.right)"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete_text(first_result)"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete_text(nested_result)"),
+        true,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete_text(alias_result)"),
+        true,
+    )
+}
+
+@(test)
+early_return_does_not_claim_full_parameter_field_transfer :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+
+(defstruct Pair [left: string right: string])
+
+(defn make-pair [] -> Pair
+  (Pair :left (str "left") :right (str "right")))
+
+(defn take-early [value: Pair left?: bool] -> string
+  (if left?
+    (return value.left))
+  (delete value.left)
+  value.right)
+
+(defn use [left?: bool] -> int
+  (let [value (make-pair)
+        result (take-early value left?)]
+    (count result)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    result_uncertain := false
+    field_cleanup_conditional := false
+    for warning in result.warnings {
+        if strings.contains(
+            warning.message,
+            "ownership of result from take-early differs across return paths",
+        ) {
+            result_uncertain = true
+        }
+        if strings.contains(
+            warning.message,
+            "explicit cleanup of aggregate field `value.left` is path-dependent",
+        ) {
+            field_cleanup_conditional = true
+        }
+    }
+    testing.expect_value(t, result_uncertain, true)
+    testing.expect_value(t, field_cleanup_conditional, true)
+
+    lifetimes, lifetimes_err, lifetimes_ok := kvist.lifetimes_source(source)
+    testing.expect_value(t, lifetimes_ok, true)
+    if lifetimes_ok {
+        defer delete(lifetimes)
+        testing.expect_value(
+            t,
+            strings.contains(lifetimes, "take-early"),
+            true,
+        )
+        testing.expect_value(
+            t,
+            strings.contains(
+                lifetimes,
+                "result: uncertain across return paths; automatic caller cleanup is not inserted",
+            ),
+            true,
         )
     } else {
         defer kvist.compile_error_delete(&lifetimes_err)

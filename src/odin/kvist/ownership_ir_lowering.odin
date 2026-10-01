@@ -239,6 +239,8 @@ ownership_ir_cleanup_head_for_lifecycle :: proc(
         return strings.clone("delete")
     case .Owned_Custom:
         return strings.clone(lifecycle.cleanup_head)
+    case .Owned_Managed:
+        return strings.clone("data__release")
     case .Unknown, .Borrowed:
         return ""
     }
@@ -745,6 +747,7 @@ ownership_ir_lower_binding :: proc(
                 conditional_acquire := lifecycle.condition != .Always
                 activation := lifecycle.condition
                 activation_index := lifecycle.condition_index
+                managed_result := lifecycle.kind == .Owned_Managed
                 cleanup_head := ownership_ir_cleanup_head_for_lifecycle(
                     lifecycle,
                 )
@@ -758,7 +761,8 @@ ownership_ir_lower_binding :: proc(
                     result_index,
                 )
                 cleanup_skip_reason := Ownership_IR_Cleanup_Skip_Reason.None
-                if !destructured_result_cleanup_is_safe(
+                if !managed_result &&
+                   !destructured_result_cleanup_is_safe(
                     lowering.emitter,
                     bindings,
                     binding_index,
@@ -1375,11 +1379,25 @@ ownership_ir_add_composite_return_events :: proc(
             form.span,
         )
         if place, found := ownership_ir_lookup_name(lowering, form.text); found {
-            _ = ownership_ir_add_event(
-                &lowering.result.graph,
-                block,
-                {kind = .Return, place = place, span = form.span},
-            )
+            already_transferred := false
+            if block >= 0 && block < len(lowering.result.graph.blocks) {
+                for event in lowering.result.graph.blocks[block].events {
+                    if event.place == place && event.span == form.span &&
+                       (event.kind == .Store ||
+                        event.kind == .Transfer ||
+                        event.kind == .Return) {
+                        already_transferred = true
+                        break
+                    }
+                }
+            }
+            if !already_transferred {
+                _ = ownership_ir_add_event(
+                    &lowering.result.graph,
+                    block,
+                    {kind = .Return, place = place, span = form.span},
+                )
+            }
         }
         return
     }
@@ -1392,6 +1410,22 @@ ownership_ir_add_composite_return_events :: proc(
             )
         }
         return
+    }
+    if form.kind == .List && len(form.items) > 0 &&
+       form.items[0].kind == .Symbol {
+        head := map_name(form.items[0].text)
+        defer delete(head)
+        _, struct_constructor := find_struct_decl(lowering.emitter, head)
+        _, union_constructor := find_union_decl(lowering.emitter, head)
+        if struct_constructor || union_constructor {
+            for item in form.items[1:] {
+                ownership_ir_add_composite_return_events(
+                    lowering,
+                    item,
+                    block,
+                )
+            }
+        }
     }
 }
 
@@ -3274,6 +3308,11 @@ ownership_ir_lower_form :: proc(
     }
     if can_transfer &&
        form_value_arity(lowering.emitter, form) == .Single {
+        ownership_ir_add_composite_return_events(
+            lowering,
+            form,
+            block,
+        )
         return ownership_ir_tail_flow(block, form, true)
     }
     if !can_transfer {

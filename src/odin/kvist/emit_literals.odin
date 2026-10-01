@@ -352,6 +352,24 @@ emit_struct_field_value_text :: proc(e: ^Emitter, field: Struct_Field, value: CS
         if ok_owner {
             value_text = managed_move_local_value_text(e, field.ty, value_text, owner_flag)
             moved_local = true
+        } else if _, stored := ownership_ir_active_event_place(
+            e,
+            name,
+            value.span,
+            .Store,
+        ); stored {
+            // Owned multi-results do not need an owner flag when their only
+            // cleanup obligation moves into the aggregate. The ownership
+            // plan suppresses source cleanup in that case, so cloning here
+            // would leave the original result retained forever.
+            moved_local = true
+        } else if _, returned := ownership_ir_active_event_place(
+            e,
+            name,
+            value.span,
+            .Return,
+        ); returned {
+            moved_local = true
         }
         delete(name)
     } else if owner_name, has_owner := form_direct_borrow_owner_name(value, e); has_owner {
@@ -366,6 +384,20 @@ emit_struct_field_value_text :: proc(e: ^Emitter, field: Struct_Field, value: CS
         }
         if ok_owner {
             value_text = managed_move_local_value_text(e, field.ty, value_text, owner_flag)
+            moved_local = true
+        } else if _, stored := ownership_ir_active_event_place(
+            e,
+            owner_name,
+            value.span,
+            .Store,
+        ); stored {
+            moved_local = true
+        } else if _, returned := ownership_ir_active_event_place(
+            e,
+            owner_name,
+            value.span,
+            .Return,
+        ); returned {
             moved_local = true
         }
         delete(owner_name)

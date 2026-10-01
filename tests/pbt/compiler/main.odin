@@ -553,7 +553,7 @@ main :: proc() {
 		{
 			name = "nested owned scalar fields preserve transfer cleanup",
 			property = nested_owned_scalar_fields_preserve_transfer_cleanup,
-			description = "generated nested fields moved through scalar returns, explicit aliases, and branch returns keep exactly one cleanup obligation",
+			description = "generated nested fields moved locally or through owned parameters, scalar returns, aliases, and branch returns keep exactly one cleanup obligation",
 			tags = COMPILER_OWNERSHIP_TAGS[:],
 		},
 	}

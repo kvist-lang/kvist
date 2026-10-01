@@ -642,6 +642,7 @@ nested_owned_scalar_fields_preserve_transfer_cleanup :: proc(t: ^pbt.T) -> pbt.R
 	depth := pbt.draw(t, pbt.int_range(0, 3))
 	named := pbt.draw(t, pbt.boolean())
 	through_proc := pbt.draw(t, pbt.boolean())
+	through_parameter := pbt.draw(t, pbt.boolean())
 	transfer := Nested_Scalar_Transfer(pbt.draw(t, pbt.int_range(0, len(NESTED_SCALAR_TRANSFER_NAMES) - 1)))
 	for candidate in 0 ..= 3 {
 		pbt.cover(t, depth == candidate, 1, fmt.tprintf("nested-scalar-depth-%d", candidate))
@@ -650,6 +651,8 @@ nested_owned_scalar_fields_preserve_transfer_cleanup :: proc(t: ^pbt.T) -> pbt.R
 	pbt.cover(t, !named, 2, "nested-scalar-positional")
 	pbt.cover(t, through_proc, 2, "nested-scalar-through-procedure")
 	pbt.cover(t, !through_proc, 2, "nested-scalar-direct-constructor")
+	pbt.cover(t, through_parameter, 2, "nested-scalar-through-parameter")
+	pbt.cover(t, !through_parameter, 2, "nested-scalar-local-owner")
 	for name, index in NESTED_SCALAR_TRANSFER_NAMES {
 		pbt.cover(t, int(transfer) == index, 2, name)
 	}
@@ -696,25 +699,57 @@ nested_owned_scalar_fields_preserve_transfer_cleanup :: proc(t: ^pbt.T) -> pbt.R
 	body := ""
 	switch transfer {
 	case .Return:
-		body = fmt.tprintf(
-			"(defn extract [] -> string\n  (let [owned %s]\n    owned%s))\n\n(defn exercise [] -> int\n  (let [value (extract)]\n    (count value)))",
-			left_value,
-			field_path,
-		)
+		if through_parameter {
+			body = fmt.tprintf(
+				"(defn extract [owned: %s] -> string\n  owned%s)\n\n(defn exercise [] -> int\n  (let [owned %s\n        value (extract owned)]\n    (count value)))",
+				root_ty,
+				field_path,
+				left_value,
+			)
+		} else {
+			body = fmt.tprintf(
+				"(defn extract [] -> string\n  (let [owned %s]\n    owned%s))\n\n(defn exercise [] -> int\n  (let [value (extract)]\n    (count value)))",
+				left_value,
+				field_path,
+			)
+		}
 	case .Alias:
-		body = fmt.tprintf(
-			"(defn exercise [] -> int\n  (let [owned %s\n        moved owned%s :defer-with delete-text]\n    (count moved)))",
-			left_value,
-			field_path,
-		)
+		if through_parameter {
+			body = fmt.tprintf(
+				"(defn extract [owned: %s] -> string\n  (let [moved owned%s]\n    moved))\n\n(defn exercise [] -> int\n  (let [owned %s\n        moved (extract owned) :defer-with delete-text]\n    (count moved)))",
+				root_ty,
+				field_path,
+				left_value,
+			)
+		} else {
+			body = fmt.tprintf(
+				"(defn exercise [] -> int\n  (let [owned %s\n        moved owned%s :defer-with delete-text]\n    (count moved)))",
+				left_value,
+				field_path,
+			)
+		}
 	case .Branch_Return:
-		body = fmt.tprintf(
-			"(defn extract [left?: bool] -> string\n  (let [left %s\n        right %s]\n    (if left? left%s right%s)))\n\n(defn exercise [] -> int\n  (let [value (extract true)]\n    (count value)))",
-			left_value,
-			right_value,
-			field_path,
-			field_path,
-		)
+		if through_parameter {
+			body = fmt.tprintf(
+				"(defn extract [left: %s right: %s left?: bool] -> string\n  (if left?\n    (do (delete right%s) left%s)\n    (do (delete left%s) right%s)))\n\n(defn exercise [] -> int\n  (let [left %s\n        right %s\n        value (extract left right true)]\n    (count value)))",
+				root_ty,
+				root_ty,
+				field_path,
+				field_path,
+				field_path,
+				field_path,
+				left_value,
+				right_value,
+			)
+		} else {
+			body = fmt.tprintf(
+				"(defn extract [left?: bool] -> string\n  (let [left %s\n        right %s]\n    (if left? left%s right%s)))\n\n(defn exercise [] -> int\n  (let [value (extract true)]\n    (count value)))",
+				left_value,
+				right_value,
+				field_path,
+				field_path,
+			)
+		}
 	}
 	source := fmt.tprintf(`(package app)
 (import strings "core:strings")
@@ -732,10 +767,11 @@ nested_owned_scalar_fields_preserve_transfer_cleanup :: proc(t: ^pbt.T) -> pbt.R
 %s
 %s`, declarations, maker, body)
 	pbt.note(t, fmt.tprintf(
-		"depth=%d named=%t through-proc=%t transfer=%s\n%s",
+		"depth=%d named=%t through-proc=%t through-parameter=%t transfer=%s\n%s",
 		depth,
 		named,
 		through_proc,
+		through_parameter,
 		NESTED_SCALAR_TRANSFER_NAMES[transfer],
 		source,
 	))
@@ -766,6 +802,12 @@ nested_owned_scalar_fields_preserve_transfer_cleanup :: proc(t: ^pbt.T) -> pbt.R
 		   !strings.contains(result.output, "delete(kvist_place^)") {
 			return pbt.fail("nested scalar branch return did not clean the unselected owner and the caller result")
 		}
+	}
+	if through_parameter &&
+	   (strings.contains(result.output, fmt.tprintf("defer delete(owned%s)", field_path)) ||
+	    strings.contains(result.output, fmt.tprintf("defer delete(left%s)", field_path)) ||
+	    strings.contains(result.output, fmt.tprintf("defer delete(right%s)", field_path))) {
+		return pbt.fail("owned parameter field retained source cleanup after transfer")
 	}
 	return pbt.pass()
 }

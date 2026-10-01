@@ -179,35 +179,49 @@ lifetimes_source :: proc(source: string) -> (output: string, err: Compile_Error,
     }
     defer delete_borrowed_cst_top_form_slice(&forms)
 
+    program, err_program, ok_program := parse_program(forms[:])
+    if !ok_program {
+        return "", clone_compile_error(err_program, result_allocator), false
+    }
+    lowered, err_lower, ok_lower := lower_program(program)
+    if !ok_lower {
+        return "", clone_compile_error(err_lower, result_allocator), false
+    }
+
+    import_cache := Emitter_Import_Cache{}
+    emitter_import_cache_init(&import_cache)
+    defer emitter_import_cache_delete(&import_cache)
+    emitter := Emitter{
+        decls = lowered.decls[:],
+        import_cache = &import_cache,
+    }
+    for decl in lowered.decls {
+        if decl.kind == .Struct {
+            append(&emitter.structs, decl.struct_decl)
+        }
+        if decl.kind == .Union {
+            append(&emitter.unions, decl.union_decl)
+        }
+    }
+    infer_decoded_struct_lifetimes(&emitter)
+    infer_proc_lifetime_facts(&emitter)
+
     builder := strings.builder_make()
     defer strings.builder_destroy(&builder)
     strings.write_string(
         &builder,
         "Inferred lifetime boundaries (no source annotations):\n\n",
     )
-    for top in forms {
-        form := top.form
-        if form.kind != .List ||
-           len(form.items) < 3 ||
-           form.items[0].kind != .Symbol ||
-           (form.items[0].text != "defn" && form.items[0].text != "defn-") ||
-           form.items[1].kind != .Symbol {
+    for &decl in emitter.decls {
+        if decl.kind != .Proc {
             continue
         }
-        proc_form := form
-        if len(form.items) > 3 && form.items[2].kind == .String {
-            items: [dynamic]CST_Form
-            append(&items, form.items[0], form.items[1])
-            for item in form.items[3:] {
-                append(&items, item)
-            }
-            proc_form = CST_Form{kind = .List, items = items, span = form.span}
-        }
-        decl, err_decl, ok_decl := parse_proc_decl(proc_form)
-        if !ok_decl {
-            return "", clone_compile_error(err_decl, result_allocator), false
-        }
-        lifetimes_write_proc(&builder, form.items[1].text, &decl)
+        lifetimes_write_proc(
+            &builder,
+            decl.proc_decl.name,
+            &decl.proc_decl,
+            &emitter,
+        )
     }
     return strings.clone(strings.to_string(builder), result_allocator), {}, true
 }

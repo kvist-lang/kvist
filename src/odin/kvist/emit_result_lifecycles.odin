@@ -1,6 +1,7 @@
 package kvist
 
 import "core:fmt"
+import "core:strings"
 
 // Result lifecycles are an internal compiler description of each value in a
 // multi-result call. They deliberately are not part of Kvist's surface syntax:
@@ -10,6 +11,7 @@ Result_Lifecycle_Kind :: enum {
     Borrowed,
     Owned_Delete,
     Owned_Custom,
+    Owned_Managed,
 }
 
 Result_Cleanup_Condition :: Ownership_Activation
@@ -17,6 +19,7 @@ Result_Cleanup_Condition :: Ownership_Activation
 Result_Lifecycle :: struct {
     kind:            Result_Lifecycle_Kind,
     cleanup_head:    string,
+    result_type:     string,
     condition:       Result_Cleanup_Condition,
     condition_index: int,
 }
@@ -26,15 +29,22 @@ result_lifecycle_delete :: proc(lifecycle: ^Result_Lifecycle) {
         delete(lifecycle.cleanup_head)
         lifecycle.cleanup_head = ""
     }
+    if lifecycle.result_type != "" {
+        delete(lifecycle.result_type)
+        lifecycle.result_type = ""
+    }
 }
 
 result_lifecycle_is_owned :: proc(lifecycle: Result_Lifecycle) -> bool {
-    return lifecycle.kind == .Owned_Delete || lifecycle.kind == .Owned_Custom
+    return lifecycle.kind == .Owned_Delete ||
+           lifecycle.kind == .Owned_Custom ||
+           lifecycle.kind == .Owned_Managed
 }
 
 result_lifecycles_match :: proc(left, right: Result_Lifecycle) -> bool {
     return left.kind == right.kind &&
            left.cleanup_head == right.cleanup_head &&
+           left.result_type == right.result_type &&
            left.condition == right.condition &&
            left.condition_index == right.condition_index
 }
@@ -246,8 +256,19 @@ infer_result_lifecycle :: proc(
     if !ok_proc ||
        proc_decl == nil ||
        proc_decl.returns.kind != .Named ||
-       len(proc_decl.returns.named) != result_count ||
-       len(proc_decl.body) != 1 {
+       len(proc_decl.returns.named) != result_count {
+        return {}, false
+    }
+    result_type := proc_decl.returns.named[result_index].ty
+    if type_text_is_managed_value(e, result_type) {
+        return Result_Lifecycle{
+            kind = .Owned_Managed,
+            result_type = strings.clone(result_type),
+            condition = .Always,
+            condition_index = -1,
+        }, true
+    }
+    if len(proc_decl.body) != 1 {
         return {}, false
     }
     // Propagate only through a tail call/body whose returned value is itself
@@ -763,6 +784,15 @@ emit_result_lifecycle_cleanup :: proc(
         cleanup = fmt.tprintf(
             "%s(%s)",
             lifecycle.cleanup_head,
+            pattern[result_index],
+        )
+    case .Owned_Managed:
+        if lifecycle.result_type == "" {
+            return
+        }
+        cleanup = managed_destroy_value_text(
+            e,
+            lifecycle.result_type,
             pattern[result_index],
         )
     case:

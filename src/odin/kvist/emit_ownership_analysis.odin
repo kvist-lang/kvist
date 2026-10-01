@@ -305,6 +305,9 @@ procedure_definitely_cleans_parameter_field :: proc(
        parameter_index >= len(decl.params) || field_name == "" {
         return false
     }
+    if decl.params[parameter_index].ownership == .Owned {
+        return true
+    }
     return forms_definitely_clean_parameter_field(
         decl.body[:],
         decl.params[parameter_index].name,
@@ -320,6 +323,9 @@ procedure_may_clean_parameter_field :: proc(
     if decl == nil || parameter_index < 0 ||
        parameter_index >= len(decl.params) || field_name == "" {
         return false
+    }
+    if decl.params[parameter_index].ownership == .Owned {
+        return true
     }
     parameter_name := decl.params[parameter_index].name
     for form in decl.body {
@@ -566,13 +572,28 @@ let_scope_transfers_owned_name :: proc(
     name: string,
     can_transfer_final: bool,
 ) -> bool {
-    for binding in bindings {
+    for binding, binding_index in bindings {
         // A binding value is evaluated before its target enters scope, so an
         // explicit delete or return here still refers to the outer binding.
         // A bare final symbol only moves into the new local and is not, by
         // itself, proof that the value is eventually cleaned up.
         if form_transfers_owned_name(e, binding.value, name, false) {
             return true
+        }
+        if !binding.is_destructure && binding.name != "" &&
+           binding.value.kind == .Symbol {
+            source_name := map_name(binding.value.text)
+            aliases_name := source_name == name
+            delete(source_name)
+            if aliases_name && let_scope_transfers_owned_name(
+                e,
+                bindings[binding_index+1:],
+                body,
+                binding.name,
+                can_transfer_final,
+            ) {
+                return true
+            }
         }
         if binding_declares_mapped_name(binding, name) {
             return false
@@ -1069,6 +1090,86 @@ ownership_type_contains_automatic_native_delete :: proc(
         }
     }
     return false
+}
+
+append_automatic_native_delete_leaf_names :: proc(
+    e: ^Emitter,
+    ty, prefix: string,
+    names: ^[dynamic]string,
+    depth := 0,
+) {
+    if names == nil || prefix == "" || depth > 16 {
+        return
+    }
+    if type_supports_automatic_native_delete(ty) {
+        append(names, strings.clone(prefix))
+        return
+    }
+    if e == nil {
+        return
+    }
+    struct_decl, ok_struct := find_struct_decl(e, strings.trim_space(ty))
+    if !ok_struct || type_text_has_managed_lifecycle(e, struct_decl.name) {
+        return
+    }
+    for field in struct_decl.fields {
+        field_name := fmt.tprintf("%s.%s", prefix, field.name)
+        append_automatic_native_delete_leaf_names(
+            e,
+            field.ty,
+            field_name,
+            names,
+            depth+1,
+        )
+        delete(field_name)
+    }
+}
+
+proc_parameter_transfers_all_owned_leaves :: proc(
+    e: ^Emitter,
+    proc_decl: ^Proc_Decl,
+    parameter_index: int,
+) -> bool {
+    if e == nil || proc_decl == nil || parameter_index < 0 ||
+       parameter_index >= len(proc_decl.params) {
+        return false
+    }
+    for form in proc_decl.body {
+        if form_contains_explicit_return(form) {
+            return false
+        }
+    }
+    param := proc_decl.params[parameter_index]
+    if type_supports_automatic_native_delete(param.ty) {
+        return false
+    }
+    leaf_names: [dynamic]string
+    defer {
+        for name in leaf_names {
+            delete(name)
+        }
+        delete(leaf_names)
+    }
+    append_automatic_native_delete_leaf_names(
+        e,
+        param.ty,
+        param.name,
+        &leaf_names,
+    )
+    if len(leaf_names) == 0 {
+        return false
+    }
+    for name in leaf_names {
+        if !body_deletes_or_returns_name(
+            e,
+            proc_decl.body[:],
+            name,
+            true,
+        ) {
+            return false
+        }
+    }
+    return true
 }
 
 aggregate_result_value_contains_owned_for_type :: proc(
@@ -1808,7 +1909,7 @@ infer_proc_lifetime_facts :: proc(e: ^Emitter) {
                 }
                 delete(owned_fields)
             }
-            for &param in proc_decl.params {
+            for &param, param_index in proc_decl.params {
                 if param.ownership == .Owned {
                     continue
                 }
@@ -1818,7 +1919,14 @@ infer_proc_lifetime_facts :: proc(e: ^Emitter) {
                     !type_text_has_managed_lifecycle(e, param.ty) &&
                     proc_decl.owns_result &&
                     body_deletes_or_returns_name(e, proc_decl.body[:], param.name, true)
-                if explicit_consumption || transferred_result {
+                transferred_aggregate :=
+                    proc_parameter_transfers_all_owned_leaves(
+                        e,
+                        proc_decl,
+                        param_index,
+                    )
+                if explicit_consumption || transferred_result ||
+                   transferred_aggregate {
                     param.ownership = .Owned
                     changed = true
                 }

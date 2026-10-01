@@ -1,6 +1,7 @@
 (package tests)
 
 (import strings "core:strings")
+(import data "kvist:data")
 (import t "kvist:test")
 
 (defstruct Owned-Value [value: string])
@@ -9,6 +10,7 @@
 (defstruct Owned-Pair [left: string right: string marker: int])
 (defstruct Direct-Inner [text: string])
 (defstruct Direct-Outer [inner: Direct-Inner marker: int])
+(defstruct Data-Snapshot [comments: Data])
 (defunion Owned-Choice [owned: Owned-Value number: int])
 (defunion Text-Choice [text: string values: [dynamic]int number: int])
 
@@ -77,6 +79,16 @@
 (defn- delete-text [value: string]
   (delete value))
 
+(defn- pull-comments [ok?: bool] -> [comments: Data, ok: bool]
+  (return [{:id "comment-1"} {:id "comment-2"}] ok?))
+
+(defn- load-comments [ok?: bool] -> Data-Snapshot
+  (let [[comments ok] (pull-comments ok?)]
+    (when (not ok)
+      (data.release comments)
+      (return (Data-Snapshot :comments nil)))
+    (Data-Snapshot :comments comments)))
+
 (defn- extract-direct-text [] -> string
   (let [outer (Direct-Outer
                 :inner (Direct-Inner :text (clone-text "field-return"))
@@ -90,12 +102,39 @@
                 :marker 7)]
     (if left? left.inner.text right.inner.text)))
 
+(defn- take-pair-left [pair: Owned-Pair] -> string
+  (delete pair.right)
+  pair.left)
+
+(defn- take-direct-text [outer: Direct-Outer] -> string
+  outer.inner.text)
+
+(defn- take-pair-left-through-alias [pair: Owned-Pair] -> string
+  (let [result pair.left]
+    (delete pair.right)
+    result))
+
+(defn- take-pair-branch [pair: Owned-Pair left?: bool] -> string
+  (if left?
+    (do
+      (delete pair.right)
+      pair.left)
+    (do
+      (delete pair.left)
+      pair.right)))
+
 (t.deftest named-owned-field-moves-through-struct-into-array
   (let [owned (clone-owned "named")
         link (Link :observed owned)
         links (make [dynamic]Link) :defer-with delete-links]
     (append (addr links) link)
     (t.is (= links[0].observed.value "named"))))
+
+(t.deftest owned-managed-multi-result-moves-into-returned-struct
+  (let [snapshot (load-comments true)
+        empty (load-comments false)]
+    (t.is (= (data.count snapshot.comments) 2))
+    (t.is (data.nil? empty.comments))))
 
 (t.deftest positional-owned-field-moves-through-two-structs-into-array
   (let [owned (clone-owned "positional")
@@ -213,3 +252,24 @@
   (let [outer (make-direct-outer)
         value outer.inner.text :defer-with delete-text]
     (t.is (= value "nested-return"))))
+
+(t.deftest owned-parameter-field-return-moves-owner
+  (let [pair (make-pair 8)
+        value (take-pair-left pair) :defer-with delete-text]
+    (t.is (= value "left"))))
+
+(t.deftest nested-owned-parameter-field-return-moves-owner
+  (let [outer (make-direct-outer)
+        value (take-direct-text outer) :defer-with delete-text]
+    (t.is (= value "nested-return"))))
+
+(t.deftest owned-parameter-field-alias-return-moves-owner
+  (let [pair (make-pair 9)
+        value (take-pair-left-through-alias pair) :defer-with delete-text]
+    (t.is (= value "left"))))
+
+(t.deftest owned-parameter-branch-field-return-moves-owner
+  (for [left? ([2]bool [false true])]
+    (let [pair (make-pair 10)
+          value (take-pair-branch pair left?) :defer-with delete-text]
+      (t.is (> (count value) 0)))))
