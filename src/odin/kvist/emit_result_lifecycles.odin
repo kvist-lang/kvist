@@ -1245,3 +1245,61 @@ emit_result_lifecycle_cleanup :: proc(
     e.indent -= 1
     emit_line(e, "}")
 }
+
+emit_result_lifecycle_immediate_cleanup :: proc(
+    e: ^Emitter,
+    lifecycle: Result_Lifecycle,
+    pattern: []string,
+    result_index: int,
+) {
+    if !result_lifecycle_is_owned(lifecycle) ||
+       result_index < 0 ||
+       result_index >= len(pattern) ||
+       pattern[result_index] == "" {
+        return
+    }
+    cleanup := ""
+    #partial switch lifecycle.kind {
+    case .Owned_Delete:
+        cleanup = fmt.tprintf("delete(%s)", pattern[result_index])
+    case .Owned_Custom:
+        if lifecycle.cleanup_head == "" {
+            return
+        }
+        cleanup = fmt.tprintf(
+            "%s(%s)",
+            lifecycle.cleanup_head,
+            pattern[result_index],
+        )
+    case .Owned_Managed:
+        if lifecycle.result_type == "" {
+            return
+        }
+        cleanup = managed_destroy_value_text(
+            e,
+            lifecycle.result_type,
+            pattern[result_index],
+        )
+    case:
+        return
+    }
+    defer delete(cleanup)
+
+    if lifecycle.condition == .Always {
+        emit_line(e, cleanup)
+        return
+    }
+    condition, ok_condition := result_lifecycle_activation_text(
+        lifecycle,
+        pattern,
+    )
+    if !ok_condition {
+        return
+    }
+    defer delete(condition)
+    emit_line(e, fmt.tprintf("if %s {{", condition))
+    e.indent += 1
+    emit_line(e, cleanup)
+    e.indent -= 1
+    emit_line(e, "}")
+}

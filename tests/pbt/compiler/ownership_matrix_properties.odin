@@ -115,6 +115,7 @@ Condition_Mutation_Location :: enum {
 	Alias,
 	If_Condition,
 	Later_Binding,
+	Toggle_Source,
 }
 
 CONDITION_MUTATION_LOCATION_NAMES := [?]string{
@@ -122,6 +123,98 @@ CONDITION_MUTATION_LOCATION_NAMES := [?]string{
 	"condition-mutation-alias",
 	"condition-mutation-if-condition",
 	"condition-mutation-later-binding",
+	"condition-mutation-toggle-source",
+}
+
+Owned_Discard_Shape :: enum {
+	Simple,
+	Always_Left,
+	Always_Right,
+	Always_Both,
+	Conditional_Status_Named,
+	Conditional_Status_Discarded,
+	Explicit_Simple,
+	Explicit_Multi,
+	Explicit_Conditional,
+}
+
+OWNED_DISCARD_SHAPE_NAMES := [?]string{
+	"owned-discard-simple",
+	"owned-discard-always-left",
+	"owned-discard-always-right",
+	"owned-discard-always-both",
+	"owned-discard-conditional-status-named",
+	"owned-discard-conditional-status-discarded",
+	"owned-discard-explicit-simple",
+	"owned-discard-explicit-multi",
+	"owned-discard-explicit-conditional",
+}
+
+discarded_owned_results_are_cleaned_immediately :: proc(t: ^pbt.T) -> pbt.Result {
+	shape := Owned_Discard_Shape(pbt.draw(t, pbt.int_range(0, len(OWNED_DISCARD_SHAPE_NAMES) - 1)))
+	for name, index in OWNED_DISCARD_SHAPE_NAMES {
+		pbt.cover(t, int(shape) == index, 2, name)
+	}
+
+	binding := "_ (strings.clone \"discarded\")"
+	body := "    1"
+	exercise_body := ""
+	switch shape {
+	case .Always_Left:
+		binding = "[_ right] (clone-pair \"left\" \"right\")"
+		body = "    (count right)"
+	case .Always_Right:
+		binding = "[left _] (clone-pair \"left\" \"right\")"
+		body = "    (count left)"
+	case .Always_Both:
+		binding = "[_ _] (clone-pair \"left\" \"right\")"
+	case .Conditional_Status_Named:
+		binding = "[_ allocated?] (strings.replace \"hello\" \"e\" \"a\" -1)"
+		body = "    (if allocated? 1 0)"
+	case .Conditional_Status_Discarded:
+		binding = "[_ _] (strings.replace \"hello\" \"e\" \"a\" -1)"
+	case .Explicit_Simple:
+		exercise_body = "  (discard (strings.clone \"discarded\"))\n  1"
+	case .Explicit_Multi:
+		exercise_body = "  (discard (clone-pair \"left\" \"right\"))\n  1"
+	case .Explicit_Conditional:
+		exercise_body = "  (discard (strings.replace \"hello\" \"e\" \"a\" -1))\n  1"
+	case .Simple:
+	}
+	if exercise_body == "" {
+		exercise_body = fmt.tprintf("  (let [%s]\n%s)", binding, body)
+	}
+	source := fmt.tprintf(`(package app)
+(import strings "core:strings")
+
+(defn clone-pair [left: string right: string]
+  -> [left-result: string, right-result: string]
+  (return (strings.clone left) (strings.clone right)))
+
+(defn exercise [] -> int
+%s)`, exercise_body)
+	pbt.note(t, fmt.tprintf("shape=%s\n%s", OWNED_DISCARD_SHAPE_NAMES[shape], source))
+	result, compile_error, ok := kvist.compile_source_with_map(source)
+	if !ok {
+		defer kvist.compile_error_delete(&compile_error)
+		return pbt.fail(fmt.tprintf("generated owned-discard program did not compile: %s", compile_error.message))
+	}
+	defer delete(result.output)
+	defer kvist.source_map_slice_delete(result.source_map)
+	defer kvist.compile_warning_slice_delete(result.warnings)
+	if len(result.warnings) != 0 {
+		return pbt.fail(fmt.tprintf("generated owned-discard program emitted warning: %s", result.warnings[0].message))
+	}
+	if !strings.contains(result.output, "delete(kvist_thread_") {
+		return pbt.fail("discarded owned result was not cleaned")
+	}
+	if strings.contains(result.output, "defer delete(kvist_thread_") ||
+	   strings.contains(result.output, "_ = strings.clone") ||
+	   strings.contains(result.output, "_, right :=") ||
+	   strings.contains(result.output, "left, _ :=") {
+		return pbt.fail("discarded owned result was not materialized for immediate cleanup")
+	}
+	return pbt.pass()
 }
 
 mutated_activation_siblings_block_conditional_cleanup_inference :: proc(t: ^pbt.T) -> pbt.Result {
@@ -140,6 +233,8 @@ mutated_activation_siblings_block_conditional_cleanup_inference :: proc(t: ^pbt.
 	case .Later_Binding:
 		bindings = "[[value did-allocate?] (strings.replace source old new -1)\n        marker (do (set! did-allocate? (not did-allocate?)) true)]"
 		body = "    (assert marker)\n    (return did-allocate? value)"
+	case .Toggle_Source:
+		body = "    (toggle! did-allocate?)\n    (return did-allocate? value)"
 	case .Source:
 	}
 	source := fmt.tprintf(`(package app)

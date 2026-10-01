@@ -43,6 +43,10 @@
   (let [cloned (strings.clone value)]
     (return cloned true)))
 
+(defn- clone-text-pair-results [left: string right: string]
+  -> [left-result: string, right-result: string]
+  (return (strings.clone left) (strings.clone right)))
+
 (defn- replace-text-result [value: string old: string new: string]
   -> [allocated?: bool, result: string]
   (let [[replaced did-allocate?] (strings.replace value old new -1)]
@@ -59,6 +63,12 @@
   -> [allocated?: bool, result: string]
   (let [[replaced did-allocate?] (strings.replace value "z" "x" -1)]
     (set! did-allocate? (not did-allocate?))
+    (return did-allocate? replaced)))
+
+(defn- replace-text-with-toggled-condition [value: string]
+  -> [allocated?: bool, result: string]
+  (let [[replaced did-allocate?] (strings.replace value "z" "x" -1)]
+    (toggle! did-allocate?)
     (return did-allocate? replaced)))
 
 (defn- clone-owned [value: string] -> Owned-Value
@@ -203,6 +213,26 @@
   (let [[marked-owned? value] (replace-text-with-inverted-condition "hello")]
     (t.is marked-owned?)
     (t.is (= value "hello"))))
+
+(t.deftest conditional-owned-result-rejects-a-toggled-sibling
+  (let [[marked-owned? value] (replace-text-with-toggled-condition "hello")]
+    (t.is marked-owned?)
+    (t.is (= value "hello"))))
+
+(t.deftest discarded-owned-results-are-cleaned-immediately
+  (discard (strings.clone "expression-discard"))
+  (discard (clone-text-pair-results "discard-left" "discard-right"))
+  (discard (strings.replace "hello" "e" "a" -1))
+  (let [_ (strings.clone "simple-discard")
+        [_ right] (clone-text-pair-results "left" "right")
+        [_ unchanged-allocated?] (strings.replace "hello" "z" "x" -1)
+        [_ changed-allocated?] (strings.replace "hello" "e" "a" -1)
+        [_ _] (strings.replace "hello" "e" "a" -1)
+        [_ comments-ok] (pull-comments true)]
+    (t.is (= right "right"))
+    (t.is (not unchanged-allocated?))
+    (t.is changed-allocated?)
+    (t.is comments-ok)))
 
 (t.deftest owned-managed-multi-result-moves-into-returned-struct
   (let [snapshot (load-comments true)

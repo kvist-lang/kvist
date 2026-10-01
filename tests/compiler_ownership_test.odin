@@ -226,10 +226,18 @@ conditional_owned_result_rejects_a_mutated_activation_sibling :: proc(
     (set! did-allocate? (not did-allocate?))
     (return did-allocate? value)))
 
+(defn replace-toggled [source: string old: string new: string]
+  -> [allocated?: bool, result: string]
+  (let [[value did-allocate?] (strings.replace source old new -1)]
+    (toggle! did-allocate?)
+    (return did-allocate? value)))
+
 (defn use [] -> int
-  (let [[allocated? value] (replace-inverted "hello" "z" "x")]
+  (let [[allocated? value] (replace-inverted "hello" "z" "x")
+        [toggle-allocated? toggle-value] (replace-toggled "hello" "z" "x")]
     (assert allocated?)
-    (count value)))`
+    (assert toggle-allocated?)
+    (+ (count value) (count toggle-value))))`
     result, err, ok := kvist.compile_source_with_map(source)
     testing.expect_value(t, ok, true)
     if !ok {
@@ -241,6 +249,57 @@ conditional_owned_result_rejects_a_mutated_activation_sibling :: proc(
     defer kvist.compile_warning_slice_delete(result.warnings)
 
     testing.expect_value(t, strings.contains(result.output, "delete(value)"), false)
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "delete(toggle_value)"),
+        false,
+    )
+}
+
+@(test)
+discarded_owned_results_are_materialized_and_cleaned_immediately :: proc(
+    t: ^testing.T,
+) {
+    source := `(package app)
+(import strings "core:strings")
+
+(defn clone-pair [left: string right: string]
+  -> [left-result: string, right-result: string]
+  (return (strings.clone left) (strings.clone right)))
+
+(defn use [] -> int
+  (discard (strings.clone "expression"))
+  (discard (clone-pair "discard-left" "discard-right"))
+  (discard (strings.replace "hello" "e" "a" -1))
+  (let [_ (strings.clone "simple")
+        [_ right] (clone-pair "left" "right")
+        [_ allocated?] (strings.replace "hello" "e" "a" -1)
+        [_ _] (strings.replace "hello" "e" "a" -1)]
+    (assert allocated?)
+    (count right)))`
+    result, err, ok := kvist.compile_source_with_map(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(result.output)
+    defer kvist.source_map_slice_delete(result.source_map)
+    defer kvist.compile_warning_slice_delete(result.warnings)
+
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "defer delete(kvist_thread_"),
+        false,
+    )
+    testing.expect_value(
+        t,
+        strings.contains(result.output, "_ = strings.clone"),
+        false,
+    )
+    testing.expect_value(t, strings.contains(result.output, "_, right :="), false)
 }
 
 @(test)
@@ -3875,7 +3934,7 @@ warn_when_automatic_file_cleanup_is_skipped_for_storage :: proc(t: ^testing.T) {
 }
 
 @(test)
-warn_discarded_direct_read_entire_file_with_automatic_cleanup_hint :: proc(t: ^testing.T) {
+clean_discarded_direct_read_entire_file :: proc(t: ^testing.T) {
     source := `(package main)
 (import os "core:os")
 
@@ -3893,14 +3952,13 @@ warn_discarded_direct_read_entire_file_with_automatic_cleanup_hint :: proc(t: ^t
     defer kvist.source_map_slice_delete(result.source_map)
     defer kvist.compile_warning_slice_delete(result.warnings)
 
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from os.read_entire_file is discarded; destructure its results for automatic scoped cleanup, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "kvist_thread_1, _ := os.read_entire_file"), true)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_1)"), true)
 }
 
 @(test)
-warn_discarded_third_party_named_owned_bytes_from_alloc_shape :: proc(t: ^testing.T) {
+clean_discarded_third_party_named_owned_bytes_from_alloc_shape :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-owned-named-bytes-package-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)
     if dir_err != nil {
@@ -3969,10 +4027,9 @@ warn_discarded_third_party_named_owned_bytes_from_alloc_shape :: proc(t: ^testin
     testing.expect_value(t, strings.contains(result.output, "support__read_bytes :: #force_inline proc(path: string) -> (data: []byte, err: ops.Error)"), true)
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
     testing.expect_value(t, strings.contains(result.output, "return ops.read_entire_file(path, context.allocator)"), true)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.read-bytes is discarded; destructure its results for automatic scoped cleanup, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "kvist_thread_1, _ := support__read_bytes"), true)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_1)"), true)
 }
 
 @(test)

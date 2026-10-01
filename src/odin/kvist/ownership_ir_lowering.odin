@@ -595,11 +595,17 @@ ownership_ir_lower_discarded_result :: proc(
     form: CST_Form,
     block: int,
 ) {
+    has_result_lifecycle := form_has_owned_result_lifecycle(
+        lowering.emitter,
+        form,
+    )
     diagnose :=
-        (form_requires_explicit_owned_cleanup(form, lowering.emitter) ||
-         form_has_owned_result_lifecycle(lowering.emitter, form)) &&
+        form_requires_explicit_owned_cleanup(form, lowering.emitter) &&
+        !has_result_lifecycle &&
         !form_supports_automatic_native_delete(form, lowering.emitter)
-    handled := form_requires_owned_discard_cleanup(lowering.emitter, form) &&
+    handled :=
+        (form_requires_owned_discard_cleanup(lowering.emitter, form) ||
+         has_result_lifecycle) &&
                !diagnose
     if !diagnose && !handled {
         return

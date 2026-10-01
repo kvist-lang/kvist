@@ -6,7 +6,95 @@ import "core:strings"
 import "core:time"
 
 emit_binding_assignment :: proc(e: ^Emitter, binding: Binding, value: string) {
-    if binding.is_destructure || binding.is_result_binding {
+    if binding.is_destructure {
+        output_names: [dynamic]string
+        synthetic: [dynamic]bool
+        cleanup_discard: [dynamic]bool
+        defer {
+            for name, idx in output_names {
+                if synthetic[idx] {
+                    delete(name)
+                }
+            }
+            delete(output_names)
+            delete(synthetic)
+            delete(cleanup_discard)
+        }
+        for name in binding.pattern {
+            append(&output_names, name)
+            append(&synthetic, false)
+            append(&cleanup_discard, false)
+        }
+        for name, idx in binding.pattern {
+            if name != "" {
+                continue
+            }
+            lifecycle, known := infer_result_lifecycle(
+                e,
+                binding.value,
+                idx,
+                len(binding.pattern),
+            )
+            owned := known && result_lifecycle_is_owned(lifecycle)
+            result_lifecycle_delete(&lifecycle)
+            if !owned {
+                continue
+            }
+            output_names[idx] = thread_temp_name(e)
+            synthetic[idx] = true
+            cleanup_discard[idx] = true
+        }
+        for should_cleanup, idx in cleanup_discard {
+            if !should_cleanup {
+                continue
+            }
+            lifecycle, known := infer_result_lifecycle(
+                e,
+                binding.value,
+                idx,
+                len(binding.pattern),
+            )
+            if known && lifecycle.condition != .Always &&
+               lifecycle.condition_index >= 0 &&
+               lifecycle.condition_index < len(output_names) &&
+               output_names[lifecycle.condition_index] == "" {
+                condition_index := lifecycle.condition_index
+                output_names[condition_index] = thread_temp_name(e)
+                synthetic[condition_index] = true
+            }
+            result_lifecycle_delete(&lifecycle)
+        }
+        line_builder := strings.builder_make()
+        defer strings.builder_destroy(&line_builder)
+        for name, idx in output_names {
+            if idx > 0 {
+                strings.write_string(&line_builder, ", ")
+            }
+            strings.write_string(&line_builder, binding_output_name(name))
+        }
+        fmt.sbprintf(&line_builder, " := %s", value)
+        emit_prefixed_expr_mapped(e, "", strings.clone(strings.to_string(line_builder)), binding.value.span)
+        for should_cleanup, idx in cleanup_discard {
+            if !should_cleanup {
+                continue
+            }
+            lifecycle, known := infer_result_lifecycle(
+                e,
+                binding.value,
+                idx,
+                len(binding.pattern),
+            )
+            if known {
+                emit_result_lifecycle_immediate_cleanup(
+                    e,
+                    lifecycle,
+                    output_names[:],
+                    idx,
+                )
+            }
+            result_lifecycle_delete(&lifecycle)
+        }
+    } else if binding.is_result_binding {
         line_builder := strings.builder_make()
         defer strings.builder_destroy(&line_builder)
         for name, idx in binding.pattern {
@@ -18,7 +106,32 @@ emit_binding_assignment :: proc(e: ^Emitter, binding: Binding, value: string) {
         fmt.sbprintf(&line_builder, " := %s", value)
         emit_prefixed_expr_mapped(e, "", strings.clone(strings.to_string(line_builder)), binding.value.span)
     } else if binding.name == "" {
-        emit_prefixed_expr_mapped(e, "_ = ", value, binding.value.span)
+        lifecycle, known := infer_result_lifecycle(
+            e,
+            binding.value,
+            0,
+            1,
+        )
+        if known && result_lifecycle_is_owned(lifecycle) {
+            discard_name := thread_temp_name(e)
+            defer delete(discard_name)
+            emit_prefixed_expr_mapped(
+                e,
+                fmt.tprintf("%s := ", discard_name),
+                value,
+                binding.value.span,
+            )
+            discard_pattern := [1]string{discard_name}
+            emit_result_lifecycle_immediate_cleanup(
+                e,
+                lifecycle,
+                discard_pattern[:],
+                0,
+            )
+        } else {
+            emit_prefixed_expr_mapped(e, "_ = ", value, binding.value.span)
+        }
+        result_lifecycle_delete(&lifecycle)
     } else if binding.is_typed {
         emit_prefixed_expr_mapped(e, fmt.tprintf("%s: %s = ", binding.name, binding.ty), value, binding.value.span)
     } else {
@@ -935,7 +1048,109 @@ emit_discarded_expr_value :: proc(e: ^Emitter, form: CST_Form, expr: string) {
     emit_prefixed_expr_mapped(e, "_ = ", expr, form.span)
 }
 
+emit_result_lifecycle_discard_cleanup :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    expr: string,
+) -> bool {
+    result_count, known_count := result_lifecycle_call_result_count(e, form)
+    if !known_count {
+        result_count = 1
+    }
+    if result_count <= 0 {
+        return false
+    }
+    lifecycles: [dynamic]Result_Lifecycle
+    lifecycle_known: [dynamic]bool
+    output_names: [dynamic]string
+    synthetic: [dynamic]bool
+    cleanup_result: [dynamic]bool
+    defer {
+        for lifecycle in lifecycles {
+            lifecycle_copy := lifecycle
+            result_lifecycle_delete(&lifecycle_copy)
+        }
+        for name, idx in output_names {
+            if synthetic[idx] {
+                delete(name)
+            }
+        }
+        delete(lifecycles)
+        delete(lifecycle_known)
+        delete(output_names)
+        delete(synthetic)
+        delete(cleanup_result)
+    }
+    has_owned := false
+    for result_index in 0..<result_count {
+        lifecycle, known := infer_result_lifecycle(
+            e,
+            form,
+            result_index,
+            result_count,
+        )
+        owned := known && result_lifecycle_is_owned(lifecycle)
+        append(&lifecycles, lifecycle)
+        append(&lifecycle_known, known)
+        append(&output_names, "")
+        append(&synthetic, false)
+        append(&cleanup_result, owned)
+        if owned {
+            output_names[result_index] = thread_temp_name(e)
+            synthetic[result_index] = true
+            has_owned = true
+        }
+    }
+    if !has_owned {
+        return false
+    }
+    for should_cleanup, result_index in cleanup_result {
+        if !should_cleanup {
+            continue
+        }
+        lifecycle := lifecycles[result_index]
+        if lifecycle.condition != .Always &&
+           lifecycle.condition_index >= 0 &&
+           lifecycle.condition_index < len(output_names) &&
+           output_names[lifecycle.condition_index] == "" {
+            condition_index := lifecycle.condition_index
+            output_names[condition_index] = thread_temp_name(e)
+            synthetic[condition_index] = true
+        }
+    }
+
+    line_builder := strings.builder_make()
+    defer strings.builder_destroy(&line_builder)
+    for name, idx in output_names {
+        if idx > 0 {
+            strings.write_string(&line_builder, ", ")
+        }
+        strings.write_string(&line_builder, binding_output_name(name))
+    }
+    strings.write_string(&line_builder, " := ")
+    emit_prefixed_expr_mapped(
+        e,
+        strings.clone(strings.to_string(line_builder)),
+        expr,
+        form.span,
+    )
+    for should_cleanup, result_index in cleanup_result {
+        if should_cleanup && lifecycle_known[result_index] {
+            emit_result_lifecycle_immediate_cleanup(
+                e,
+                lifecycles[result_index],
+                output_names[:],
+                result_index,
+            )
+        }
+    }
+    return true
+}
+
 emit_discarded_expr :: proc(e: ^Emitter, form: CST_Form, expr: string) {
+    if emit_result_lifecycle_discard_cleanup(e, form, expr) {
+        return
+    }
     event, automatic_cleanup, tracked :=
         ownership_ir_current_transient_event(e, form)
     if tracked {

@@ -580,6 +580,12 @@ main :: proc() {
 			description = "generated source, alias, condition, and later-binding mutations prevent unsafe conditional cleanup propagation",
 			tags = COMPILER_OWNERSHIP_TAGS[:],
 		},
+		{
+			name = "discarded owned results are cleaned immediately",
+			property = discarded_owned_results_are_cleaned_immediately,
+			description = "generated simple, multi-owned, and conditional discarded results are materialized and cleaned without scope defers",
+			tags = COMPILER_OWNERSHIP_TAGS[:],
+		},
 	}
 	pbt.run_cli(properties[:], os.args[1:], {
 		num_tests = 25,

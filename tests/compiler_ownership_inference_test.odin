@@ -363,7 +363,7 @@ compile_binds_owned_result_from_both_if_branches :: proc(t: ^testing.T) {
 }
 
 @(test)
-warn_discarded_regex_owned_results_from_alloc_shape :: proc(t: ^testing.T) {
+clean_discarded_regex_owned_results_from_alloc_shape :: proc(t: ^testing.T) {
     source := `(package main)
 (import re "kvist:regex")
 
@@ -388,27 +388,15 @@ warn_discarded_regex_owned_results_from_alloc_shape :: proc(t: ^testing.T) {
     testing.expect_value(t, strings.contains(result.output, "re__compile :: #force_inline proc(pattern: re__Pattern) -> (value: re__Regex, err: re__Error)"), true)
     testing.expect_value(t, strings.contains(result.output, "re__match :: #force_inline proc(compiled: re__Regex, s: string) -> (capture: re__Capture, ok: bool)"), true)
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
-    testing.expect_value(t, len(result.warnings), 2)
-    if len(result.warnings) == 2 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from re.compile is discarded; destructure its results for automatic scoped cleanup, or return it")
-        testing.expect_value(t, result.warnings[1].message, "owned result from re.match is discarded; destructure its results for automatic scoped cleanup, or return it")
-        for warning in result.warnings {
-            testing.expect_value(
-                t,
-                warning.code,
-                kvist.Compile_Warning_Code.Ownership_Discarded_Result,
-            )
-            testing.expect_value(
-                t,
-                warning.confidence,
-                kvist.Compile_Warning_Confidence.Definite,
-            )
-        }
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "if kvist_thread_2 == nil {"), true)
+    testing.expect_value(t, strings.contains(result.output, "rx.destroy(kvist_thread_1)"), true)
+    testing.expect_value(t, strings.contains(result.output, "if kvist_thread_4 {"), true)
+    testing.expect_value(t, strings.contains(result.output, "rx.destroy(kvist_thread_3)"), true)
 }
 
 @(test)
-compile_warns_for_explicitly_discarded_owned_multi_result :: proc(
+compile_cleans_explicitly_discarded_owned_multi_result :: proc(
     t: ^testing.T,
 ) {
     source := `(package main)
@@ -427,23 +415,13 @@ compile_warns_for_explicitly_discarded_owned_multi_result :: proc(
     defer kvist.source_map_slice_delete(result.source_map)
     defer kvist.compile_warning_slice_delete(result.warnings)
 
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(
-            t,
-            result.warnings[0].code,
-            kvist.Compile_Warning_Code.Ownership_Discarded_Result,
-        )
-        testing.expect_value(
-            t,
-            result.warnings[0].confidence,
-            kvist.Compile_Warning_Confidence.Definite,
-        )
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "if kvist_thread_2 == nil {"), true)
+    testing.expect_value(t, strings.contains(result.output, "rx.destroy(kvist_thread_1)"), true)
 }
 
 @(test)
-warn_discarded_third_party_regex_owned_result_from_alloc_shape :: proc(t: ^testing.T) {
+clean_discarded_third_party_regex_owned_result_from_alloc_shape :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-owned-regex-package-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)
     if dir_err != nil {
@@ -515,10 +493,9 @@ warn_discarded_third_party_regex_owned_result_from_alloc_shape :: proc(t: ^testi
     testing.expect_value(t, strings.contains(result.output, "support__compile :: #force_inline proc(pattern: string) -> (value: support__Regex, err: support__Error)"), true)
     testing.expect_value(t, strings.contains(result.output, "return r.create(pattern)"), true)
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.compile is discarded; destructure its results for automatic scoped cleanup, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "if kvist_thread_2 == nil {"), true)
+    testing.expect_value(t, strings.contains(result.output, "r.destroy(kvist_thread_1)"), true)
 }
 
 @(test)

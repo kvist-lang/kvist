@@ -386,9 +386,13 @@ form_assigns_name :: proc(form: CST_Form, name: string) -> bool {
         if head == "fn" || head == "quote" || head == "quasiquote" {
             return false
         }
-        if head == "set!" &&
-           len(form.items) == 3 &&
-           form.items[1].kind == .Symbol {
+        mutation_arity_matches :=
+            ((head == "set!" || head == "mut!") &&
+             len(form.items) == (3 if head == "set!" else 4)) ||
+            ((head == "inc!" || head == "dec!" ||
+              head == "toggle!" || head == "negate!") &&
+             len(form.items) == 2)
+        if mutation_arity_matches && form.items[1].kind == .Symbol {
             target := map_name(form.items[1].text)
             matches := target == name
             delete(target)

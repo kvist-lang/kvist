@@ -1924,7 +1924,9 @@ emit_stmt :: proc(
         return {}, true
     case:
         allow_root_owned := last_in_proc && returns.kind != .None
-        discard_owned := form_requires_owned_discard_cleanup(e, form)
+        discard_owned :=
+            form_requires_owned_discard_cleanup(e, form) ||
+            form_has_owned_result_lifecycle(e, form)
         if last_in_proc &&
            returns.kind != .None &&
            form_is_borrowed_view_result(form, e) &&
