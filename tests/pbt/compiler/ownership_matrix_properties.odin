@@ -25,12 +25,14 @@ OWNERSHIP_DESTINATION_NAMES := [?]string{
 Ownership_Control_Flow :: enum {
 	Conditional_Construction,
 	Conditional_Storage,
+	Conditional_Multi_Result_Storage,
 	Loop_Storage,
 }
 
 OWNERSHIP_CONTROL_FLOW_NAMES := [?]string{
 	"conditional-construction",
 	"conditional-storage",
+	"conditional-multi-result-storage",
 	"loop-storage",
 }
 
@@ -576,6 +578,10 @@ owned_aggregates_transfer_through_branches_and_loops :: proc(t: ^pbt.T) -> pbt.R
 		strings.write_string(&builder, "(defn exercise [flag: bool] -> int\n  (let [left (clone-string \"left\")\n        right (clone-string \"right\")\n        payload ")
 		write_payload_constructor(&builder, named, "left", "right", "1")
 		strings.write_string(&builder, "\n        items (make [dynamic]Payload) :defer-with delete-items]\n    (if flag\n      (append (addr items) payload)\n      (append (addr items) payload))\n    (count items)))")
+	case .Conditional_Multi_Result_Storage:
+		strings.write_string(&builder, "(defn make-payload [marker: int] -> [payload: Payload, keep?: bool]\n  (return ")
+		write_payload_constructor(&builder, named, "(clone-string \"left\")", "(clone-string \"right\")", "marker")
+		strings.write_string(&builder, " (not (= marker 2))))\n\n(defn exercise [flag: bool] -> int\n  (let [[payload keep?] (make-payload 1)\n        items (make [dynamic]Payload) :defer-with delete-items]\n    (if flag\n      (append (addr items) payload)\n      (discard keep?))\n    (count items)))")
 	case .Loop_Storage:
 		strings.write_string(&builder, "(defn exercise [_flag: bool] -> int\n  (let [items (make [dynamic]Payload) :defer-with delete-items]\n    (for [index ([3]int [0 1 2])]\n      (let [left (clone-string \"left\")\n            right (clone-string \"right\")\n            payload ")
 		write_payload_constructor(&builder, named, "left", "right", "index")
@@ -600,6 +606,11 @@ owned_aggregates_transfer_through_branches_and_loops :: proc(t: ^pbt.T) -> pbt.R
 	   cleanup_exists(result.output, "payload", ".left") ||
 	   cleanup_exists(result.output, "payload", ".right") {
 		return pbt.fail("branch or loop transfer retained cleanup on an intermediate owner")
+	}
+	if flow == .Conditional_Multi_Result_Storage &&
+	   (!strings.contains(result.output, "kvist_owner_") ||
+	    !strings.contains(result.output, "if kvist_owner^")) {
+		return pbt.fail("conditional multi-result transfer did not receive guarded cleanup")
 	}
 	return pbt.pass()
 }

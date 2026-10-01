@@ -78,6 +78,32 @@ form_has_owned_union_result_variant :: proc(
     return false
 }
 
+emit_automatic_native_delete_value :: proc(
+    e: ^Emitter,
+    ty, value: string,
+    depth := 0,
+) {
+    if depth > 16 {
+        return
+    }
+    if type_supports_automatic_native_delete(ty) {
+        emit_line(e, ownership_destroy_value_text(e, ty, value))
+        return
+    }
+    struct_decl, ok_struct := find_struct_decl(e, strings.trim_space(ty))
+    if !ok_struct || type_text_has_managed_lifecycle(e, struct_decl.name) {
+        return
+    }
+    for field in struct_decl.fields {
+        emit_automatic_native_delete_value(
+            e,
+            field.ty,
+            fmt.tprintf("%s.%s", value, field.name),
+            depth+1,
+        )
+    }
+}
+
 emit_owned_union_result_cleanup :: proc(
     e: ^Emitter,
     form: CST_Form,
@@ -110,7 +136,7 @@ emit_owned_union_result_cleanup :: proc(
     e.indent += 1
     emit_line(e, fmt.tprintf("case %s:", variant_type))
     e.indent += 1
-    emit_line(e, ownership_destroy_value_text(e, variant_type, payload_name))
+    emit_automatic_native_delete_value(e, variant_type, payload_name)
     e.indent -= 1
     e.indent -= 1
     emit_line(e, "}")
@@ -118,6 +144,54 @@ emit_owned_union_result_cleanup :: proc(
         e.indent -= 1
         emit_line(e, "}")
     }
+    return true
+}
+
+emit_owned_union_result_guarded_cleanup :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+    result_index, result_count: int,
+    value_name, owner_flag: string,
+) -> bool {
+    union_type, variant_type, ok := proc_call_owned_union_result_variant_at(
+        e,
+        form,
+        result_index,
+        result_count,
+    )
+    defer delete(union_type)
+    defer delete(variant_type)
+    if !ok || value_name == "" || owner_flag == "" {
+        return false
+    }
+    emit_line(e, fmt.tprintf(
+        "defer (proc(kvist_place: ^%s, kvist_owner: ^bool) {{",
+        union_type,
+    ))
+    e.indent += 1
+    emit_line(e, "if kvist_owner^ {")
+    e.indent += 1
+    payload_name := thread_temp_name(e)
+    defer delete(payload_name)
+    emit_line(e, fmt.tprintf(
+        "#partial switch %s in kvist_place^ {{",
+        payload_name,
+    ))
+    e.indent += 1
+    emit_line(e, fmt.tprintf("case %s:", variant_type))
+    e.indent += 1
+    emit_automatic_native_delete_value(e, variant_type, payload_name)
+    e.indent -= 1
+    e.indent -= 1
+    emit_line(e, "}")
+    e.indent -= 1
+    emit_line(e, "}")
+    e.indent -= 1
+    emit_line(e, fmt.tprintf(
+        "})(%s, &%s)",
+        address_of_expr_text(value_name),
+        owner_flag,
+    ))
     return true
 }
 
@@ -164,14 +238,7 @@ emit_owned_aggregate_result_scope_cleanup :: proc(
     result_index: int,
     value_name: string,
 ) -> bool {
-    if value_name == "" ||
-       !destructured_result_cleanup_is_safe(
-           e,
-           bindings,
-           binding_index,
-           body,
-           value_name,
-       ) {
+    if value_name == "" {
         return false
     }
     fields := proc_call_owned_result_fields_at(
@@ -184,10 +251,31 @@ emit_owned_aggregate_result_scope_cleanup :: proc(
     if len(fields) == 0 {
         return false
     }
+    root_safe := destructured_result_cleanup_is_safe(
+        e,
+        bindings,
+        binding_index,
+        body,
+        value_name,
+    )
     emitted := false
     for offset in 0..<len(fields) {
         field := fields[len(fields)-1-offset]
         field_name := fmt.tprintf("%s.%s", value_name, field.name)
+        if ownership_ir_current_plan_tracks_aggregate_field(
+            e,
+            binding,
+            value_name,
+            field_name,
+        ) {
+            emitted = true
+            delete(field_name)
+            continue
+        }
+        if !root_safe {
+            delete(field_name)
+            continue
+        }
         safe := destructured_result_cleanup_is_safe(
             e,
             bindings,
@@ -1630,6 +1718,11 @@ emit_managed_destructure_cleanup :: proc(
                 name,
             )
             if !cleaned_aggregate &&
+               !ownership_ir_current_plan_tracks_union_result(
+                   e,
+                   binding,
+                   name,
+               ) &&
                destructured_result_cleanup_is_safe(
                    e,
                    bindings,

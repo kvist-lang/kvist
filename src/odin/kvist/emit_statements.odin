@@ -1975,6 +1975,7 @@ emit_stmt :: proc(
         } else {
             emit_statement_expr(e, form, expr, discard_result)
         }
+        ownership_ir_emit_active_transfer_updates(e, form)
         ownership_ir_emit_active_destroy_updates(e, form)
         if canonical_head_text == "delete" {
             for item in form.items[1:] {

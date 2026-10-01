@@ -59,6 +59,12 @@
   -> [result: Text-Choice, ok: bool]
   (return (Text-Choice :text (strings.clone value)) true))
 
+(defn- clone-owned-choice-result [value: string]
+  -> [result: Owned-Choice, ok: bool]
+  (return
+    (Owned-Choice :owned (Owned-Value :value (clone-text value)))
+    true))
+
 (defn- replace-text-result [value: string old: string new: string]
   -> [allocated?: bool, result: string]
   (let [[replaced did-allocate?] (strings.replace value old new -1)]
@@ -119,6 +125,9 @@
     :right (clone-text "right")
     :marker marker))
 
+(defn- make-pair-result [marker: int] -> [pair: Owned-Pair, keep?: bool]
+  (return (make-pair marker) (not (= marker 2))))
+
 (defn- delete-pair [pair: Owned-Pair]
   (delete pair.left)
   (delete pair.right))
@@ -128,6 +137,11 @@
     (Owned-Value value) (delete value.value)
     (int _) (discard 0)
     (discard 0)))
+
+(defn- delete-choices [choices: [dynamic]Owned-Choice]
+  (for [choice choices]
+    (delete-choice choice))
+  (delete choices))
 
 (defn- delete-text-choice [choice: Text-Choice]
   (case choice
@@ -145,6 +159,21 @@
   (Direct-Outer
     :inner (Direct-Inner :text (clone-text "nested-return"))
     :marker 5))
+
+(defn- make-direct-outer-result [marker: int]
+  -> [result: Direct-Outer, keep?: bool]
+  (return
+    (Direct-Outer
+      :inner (Direct-Inner :text (clone-text "nested-result"))
+      :marker marker)
+    (not (= marker 2))))
+
+(defn- make-owned-choice-result [marker: int]
+  -> [result: Owned-Choice, keep?: bool]
+  (return
+    (Owned-Choice
+      :owned (Owned-Value :value (clone-text "union-result")))
+    (not (= marker 2))))
 
 (defn- consume-direct-outer [value: Direct-Outer]
   (delete value.inner.text))
@@ -236,6 +265,14 @@
           :defer-with delete-owned-value]
     (t.is ok)
     (t.is (= value.value "marker"))))
+
+(t.deftest nested-owned-union-multi-result-respects-explicit-destructor
+  (let [[value ok] (clone-owned-choice-result "explicit-union")]
+    (defer (delete-choice value))
+    (t.is ok)
+    (t.is (=
+      (case value (Owned-Value owned) owned.value "")
+      "explicit-union"))))
 
 (t.deftest nested-let-captures-dereferenced-outer-local
   (let [state (Pointer-State :value 20)
@@ -342,6 +379,32 @@
       (append (addr pairs) pair)
       (append (addr pairs) pair))
     (t.is (= (count pairs) 1))))
+
+(t.deftest conditional-owned-multi-result-storage-cleans-only-rejected-values
+  (let [pairs (make [dynamic]Owned-Pair) :defer-with delete-pairs]
+    (for [marker ([3]int [1 2 3])]
+      (let [[pair keep?] (make-pair-result marker)]
+        (when keep?
+          (append (addr pairs) pair))))
+    (t.is (= (count pairs) 2))
+    (t.is (= pairs[0].marker 1))
+    (t.is (= pairs[1].marker 3))))
+
+(t.deftest conditional-nested-owned-multi-result-cleans-only-rejected-values
+  (let [values (make [dynamic]Direct-Outer) :defer-with delete-direct-outers]
+    (for [marker ([3]int [1 2 3])]
+      (let [[value keep?] (make-direct-outer-result marker)]
+        (when keep?
+          (append (addr values) value))))
+    (t.is (= (count values) 2))))
+
+(t.deftest conditional-owned-union-multi-result-cleans-only-rejected-values
+  (let [values (make [dynamic]Owned-Choice) :defer-with delete-choices]
+    (for [marker ([3]int [1 2 3])]
+      (let [[value keep?] (make-owned-choice-result marker)]
+        (when keep?
+          (append (addr values) value))))
+    (t.is (= (count values) 2))))
 
 (t.deftest loop-owned-aggregate-storage-moves-each-iteration
   (let [pairs (make [dynamic]Owned-Pair) :defer-with delete-pairs]

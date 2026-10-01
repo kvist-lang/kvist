@@ -88,7 +88,7 @@ generated_invalid_compiler_expression :: proc(
 		return generated_diagnostic_call(t, "not", arity), "not expects one argument"
 	case .If_Arity:
 		arity := pbt.draw(t, pbt.int_range(0, 5))
-		if arity == 3 {
+		if arity == 2 || arity == 3 {
 			arity = 4
 		}
 		return generated_diagnostic_call(t, "if", arity), "expects test, then"

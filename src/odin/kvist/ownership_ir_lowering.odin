@@ -749,6 +749,91 @@ ownership_ir_lower_binding :: proc(
                 if name == "" {
                     continue
                 }
+                returned_fields := proc_call_owned_result_fields_at(
+                    lowering.emitter,
+                    binding.value,
+                    result_index,
+                    result_count,
+                )
+                synthetic_binding := binding
+                synthetic_binding.name = name
+                synthetic_binding.is_destructure = false
+                synthetic_binding.is_result_binding = false
+                for field in returned_fields {
+                    if place, added := ownership_ir_add_struct_field_place(
+                        lowering,
+                        synthetic_binding,
+                        field,
+                        scope_places,
+                        body,
+                    ); added {
+                        if later_binding_aliases_name(
+                            bindings,
+                            binding_index,
+                            name,
+                        ) {
+                            lowering.result.places[place].aggregate_cleanup_unsupported =
+                                true
+                        }
+                        acquired_place = true
+                        _ = ownership_ir_add_event(
+                            &lowering.result.graph,
+                            current_block,
+                            {
+                                kind = .Acquire,
+                                place = place,
+                                span = binding.value.span,
+                            },
+                        )
+                    }
+                }
+                delete_struct_field_slice(&returned_fields)
+                union_type, variant_type, has_owned_union :=
+                    proc_call_owned_union_result_variant_at(
+                        lowering.emitter,
+                        binding.value,
+                        result_index,
+                        result_count,
+                    )
+                if has_owned_union {
+                    place := ownership_ir_add_shadow_place(
+                        lowering,
+                        name,
+                        "__owned_union_result",
+                        .Always,
+                        -1,
+                        .None,
+                        false,
+                        binding.target_span,
+                        ty = union_type,
+                        aggregate_root = name,
+                        aggregate_cleanup_unsupported =
+                            later_binding_aliases_name(
+                                bindings,
+                                binding_index,
+                                name,
+                            ) ||
+                            ownership_ir_body_has_deferred_transfer(
+                                lowering.emitter,
+                                body,
+                                name,
+                            ),
+                        diagnose_use_after_transfer = true,
+                    )
+                    append(scope_places, place)
+                    acquired_place = true
+                    _ = ownership_ir_add_event(
+                        &lowering.result.graph,
+                        current_block,
+                        {
+                            kind = .Acquire,
+                            place = place,
+                            span = binding.value.span,
+                        },
+                    )
+                }
+                delete(union_type)
+                delete(variant_type)
                 lifecycle, known_lifecycle := infer_result_lifecycle(
                     lowering.emitter,
                     binding.value,
@@ -929,6 +1014,43 @@ ownership_ir_lower_binding :: proc(
         }
     }
     return current_block
+}
+
+ownership_ir_body_has_deferred_transfer :: proc(
+    e: ^Emitter,
+    body: []CST_Form,
+    name: string,
+) -> bool {
+    for form in body {
+        if form.kind != .List || len(form.items) < 2 ||
+           form.items[0].kind != .Symbol ||
+           (form.items[0].text != "defer" &&
+            form.items[0].text != "errdefer") {
+            continue
+        }
+        for deferred in form.items[1:] {
+            if form_contains_potential_owned_transfer(e, deferred, name) {
+                return true
+            }
+            head, has_head := form_head_symbol_text(deferred)
+            normalized_head := map_name(head)
+            delete_named_cleanup := has_head &&
+                                    strings.has_prefix(
+                                        normalized_head,
+                                        "delete_",
+                                    )
+            delete(normalized_head)
+            if !delete_named_cleanup {
+                continue
+            }
+            for argument in deferred.items[1:] {
+                if cleanup_arg_names_value(argument, name) {
+                    return true
+                }
+            }
+        }
+    }
+    return false
 }
 
 ownership_ir_lower_binding_value :: proc(
@@ -1756,6 +1878,36 @@ ownership_ir_store_tracked_aggregate :: proc(
     }
 }
 
+ownership_ir_add_tracked_aggregate_events :: proc(
+    lowering: ^Ownership_IR_Lowering,
+    form: CST_Form,
+    block: int,
+    kind: Ownership_IR_Event_Kind,
+) {
+    root, ok_root := ownership_ir_cleanup_arg_root_name(form)
+    if !ok_root {
+        return
+    }
+    defer delete(root)
+    prefix := fmt.tprintf("%s.", root)
+    defer delete(prefix)
+    for place in lowering.result.places {
+        if place.aggregate_root != root ||
+           !strings.has_prefix(place.name, prefix) {
+            continue
+        }
+        _ = ownership_ir_add_event(
+            &lowering.result.graph,
+            block,
+            {
+                kind = kind,
+                place = place.place,
+                span = form.span,
+            },
+        )
+    }
+}
+
 ownership_ir_call_parameter_index :: proc(
     decl: ^Proc_Decl,
     args: []CST_Form,
@@ -2478,6 +2630,13 @@ ownership_ir_lower_call :: proc(
                     lowering,
                     item,
                     block,
+                )
+            } else if form_transfers_owned_args(form) && item_index+1 >= 2 {
+                ownership_ir_add_tracked_aggregate_events(
+                    lowering,
+                    item,
+                    block,
+                    .Transfer,
                 )
             }
             continue
@@ -4519,15 +4678,40 @@ ownership_ir_activate_bound_aggregate_places :: proc(
 ) {
     if e == nil || e.current_ownership_shadow == nil ||
        e.current_ownership_plan == nil ||
-       !e.current_ownership_plan.valid || binding.name == "" ||
-       binding.is_destructure || binding.is_result_binding ||
+       !e.current_ownership_plan.valid ||
        binding.deferred_delete || binding.err_deferred_delete ||
        binding.defer_with_cleanup {
         return
     }
+    roots: [dynamic]string
+    owner_flags: [dynamic]string
+    defer {
+        delete(roots)
+        delete(owner_flags)
+    }
+    if binding.is_destructure || binding.is_result_binding {
+        for name in binding.pattern {
+            if name != "" {
+                append(&roots, name)
+                append(&owner_flags, "")
+            }
+        }
+    } else if binding.name != "" {
+        append(&roots, binding.name)
+        append(&owner_flags, "")
+    }
+    if len(roots) == 0 {
+        return
+    }
     for place in e.current_ownership_shadow.places {
-        if place.aggregate_root != binding.name ||
-           place.span != binding.target_span || place.ty == "" ||
+        root_index := -1
+        for root, index in roots {
+            if place.aggregate_root == root {
+                root_index = index
+                break
+            }
+        }
+        if root_index < 0 || place.span != binding.target_span || place.ty == "" ||
            place.aggregate_cleanup_unsupported || place.cleanup_scheduled {
             continue
         }
@@ -4535,14 +4719,21 @@ ownership_ir_activate_bound_aggregate_places :: proc(
             e.current_ownership_plan^,
             place.place,
         )
+        owned_union_result := place.cleanup_head == "__owned_union_result"
+        if owned_union_result && placement == .Per_Exit {
+            continue
+        }
         if placement == .Per_Exit && need != .None {
             active := Ownership_IR_Active_Place{place = place.place}
             if ownership_ir_active_place_needs_owner_flag(e, place.place) {
-                active.owner_flag = managed_owner_flag_name(e)
-                emit_line(
-                    e,
-                    fmt.tprintf("%s := true", active.owner_flag),
-                )
+                if owner_flags[root_index] == "" {
+                    owner_flags[root_index] = managed_owner_flag_name(e)
+                    emit_line(
+                        e,
+                        fmt.tprintf("%s := true", owner_flags[root_index]),
+                    )
+                }
+                active.owner_flag = owner_flags[root_index]
             }
             append(
                 &e.ownership_active_per_exit_places,
@@ -4554,33 +4745,67 @@ ownership_ir_activate_bound_aggregate_places :: proc(
         if placement != .Scope_Defer || need == .None {
             continue
         }
+        result_index := -1
+        if owned_union_result {
+            for name, index in binding.pattern {
+                if name == place.aggregate_root {
+                    result_index = index
+                    break
+                }
+            }
+        }
         if need == .Always {
-            emit_line_mapped(
-                e,
-                fmt.tprintf(
-                    "defer %s",
-                    ownership_destroy_value_text(e, place.ty, place.name),
-                ),
-                binding.target_span,
-            )
+            if owned_union_result && result_index >= 0 {
+                _ = emit_owned_union_result_cleanup(
+                    e,
+                    binding.value,
+                    result_index,
+                    len(binding.pattern),
+                    place.name,
+                    true,
+                )
+            } else {
+                emit_line_mapped(
+                    e,
+                    fmt.tprintf(
+                        "defer %s",
+                        ownership_destroy_value_text(e, place.ty, place.name),
+                    ),
+                    binding.target_span,
+                )
+            }
         } else {
-            owner_flag := managed_owner_flag_name(e)
-            emit_line_mapped(
-                e,
-                fmt.tprintf("%s := true", owner_flag),
-                binding.target_span,
-            )
-            emit_line_mapped(
-                e,
-                fmt.tprintf(
-                    "defer (proc(kvist_place: ^%s, kvist_owner: ^bool) {{ if kvist_owner^ {{ %s }} }})(%s, &%s)",
-                    place.ty,
-                    ownership_destroy_value_text(e, place.ty, "kvist_place^"),
-                    address_of_expr_text(place.name),
+            if owner_flags[root_index] == "" {
+                owner_flags[root_index] = managed_owner_flag_name(e)
+                emit_line_mapped(
+                    e,
+                    fmt.tprintf("%s := true", owner_flags[root_index]),
+                    binding.target_span,
+                )
+            }
+            owner_flag := owner_flags[root_index]
+            if owned_union_result && result_index >= 0 {
+                _ = emit_owned_union_result_guarded_cleanup(
+                    e,
+                    binding.value,
+                    result_index,
+                    len(binding.pattern),
+                    place.name,
                     owner_flag,
-                ),
-                binding.target_span,
-            )
+                )
+            } else {
+                emit_line_mapped(
+                    e,
+                    fmt.tprintf(
+                        "defer (proc(kvist_place: ^%s, kvist_owner: ^bool) {{ if kvist_owner^ {{ %s }} }})(%s, &%s)",
+                        place.ty,
+                        ownership_destroy_value_text(e, place.ty, "kvist_place^"),
+                        address_of_expr_text(place.name),
+                        owner_flag,
+                    ),
+                    binding.target_span,
+                )
+            }
             append(
                 &e.ownership_active_per_exit_places,
                 Ownership_IR_Active_Place{
@@ -4591,6 +4816,54 @@ ownership_ir_activate_bound_aggregate_places :: proc(
         }
         e.ownership_plan_adoptions += 1
     }
+}
+
+ownership_ir_current_plan_tracks_aggregate_field :: proc(
+    e: ^Emitter,
+    binding: Binding,
+    root, field_name: string,
+) -> bool {
+    if e == nil || e.current_ownership_shadow == nil ||
+       e.current_ownership_plan == nil ||
+       !e.current_ownership_plan.valid {
+        return false
+    }
+    for place in e.current_ownership_shadow.places {
+        if place.aggregate_root == root && place.name == field_name &&
+           place.span == binding.target_span &&
+           !place.aggregate_cleanup_unsupported {
+            return true
+        }
+    }
+    return false
+}
+
+ownership_ir_current_plan_tracks_union_result :: proc(
+    e: ^Emitter,
+    binding: Binding,
+    root: string,
+) -> bool {
+    if e == nil || e.current_ownership_shadow == nil ||
+       e.current_ownership_plan == nil ||
+       !e.current_ownership_plan.valid {
+        return false
+    }
+    for place in e.current_ownership_shadow.places {
+        if place.aggregate_root != root || place.name != root ||
+           place.span != binding.target_span ||
+           place.cleanup_head != "__owned_union_result" {
+            continue
+        }
+        if place.aggregate_cleanup_unsupported {
+            return true
+        }
+        placement, _ := ownership_ir_cleanup_plan_placement(
+            e.current_ownership_plan^,
+            place.place,
+        )
+        return placement != .Per_Exit
+    }
+    return false
 }
 
 ownership_ir_current_plan_tracks_stored_owner :: proc(
@@ -4726,7 +4999,7 @@ ownership_ir_active_event_place :: proc(
         return -1, false
     }
     for place in e.current_ownership_shadow.places {
-        if place.name == name {
+        if place.name == name || place.aggregate_root == name {
             for block in e.current_ownership_shadow.graph.blocks {
                 for event in block.events {
                     if event.place == place.place &&
@@ -4817,6 +5090,57 @@ ownership_ir_emit_active_destroy_updates :: proc(
             break
         }
         delete(name)
+    }
+}
+
+ownership_ir_emit_active_transfer_updates :: proc(
+    e: ^Emitter,
+    form: CST_Form,
+) {
+    if e == nil || form.kind != .List {
+        return
+    }
+    updated: [dynamic]string
+    defer delete(updated)
+    for item in form.items[1:] {
+        if item.kind != .Symbol {
+            continue
+        }
+        name := map_name(item.text)
+        owner_flag, found := ownership_ir_active_event_owner_flag(
+            e,
+            name,
+            item.span,
+            .Transfer,
+        )
+        if !found {
+            owner_flag, found = ownership_ir_active_event_owner_flag(
+                e,
+                name,
+                item.span,
+                .Store,
+            )
+        }
+        delete(name)
+        if !found || owner_flag == "" {
+            continue
+        }
+        already_updated := false
+        for existing in updated {
+            if existing == owner_flag {
+                already_updated = true
+                break
+            }
+        }
+        if already_updated {
+            continue
+        }
+        emit_line_mapped(
+            e,
+            fmt.tprintf("%s = false", owner_flag),
+            item.span,
+        )
+        append(&updated, owner_flag)
     }
 }
 

@@ -2,13 +2,6 @@
 (package main)
 (import core "kvist:core")
 (import arr "kvist:arr")
-(import re "kvist:regex")
-
-(defn discarded-owned-result-demo []
-  ;; Multiple/opaque results need an explicit binding and resource-specific
-  ;; cleanup; the compiler cannot insert plain `delete` for the call.
-  (re.compile #"^a+$")
-  (println "discarded"))
 
 (defn leaked-owned-local-demo []
   ;; Reassignment prevents automatic scope cleanup because the previous
@@ -44,13 +37,11 @@
   ;;   kvist check examples/collections/ownership-warnings.kvist --ownership-audit
   ;;
   ;; Expected warnings include:
-  ;; - owned result from re.compile is discarded
   ;; - owned local xs is never deleted or returned
   ;; - owned local xs is overwritten before cleanup
   ;; - owned local xs is used after ownership transfer
   ;; - borrowed value escapes owner xs
   ;; - borrowed value is used after owner xs has been destroyed
-  (discarded-owned-result-demo)
   (leaked-owned-local-demo)
   (use-after-transfer-demo)
   (borrowed-escape-demo)

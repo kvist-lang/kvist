@@ -1250,6 +1250,17 @@ aggregate_result_value_contains_owned_for_type :: proc(
     head := map_name(form.items[0].text)
     defer delete(head)
     if head != struct_decl.name {
+        if _, called_proc, ok_proc := resolve_proc_call_decl(
+            e,
+            form.items[0].text,
+        ); ok_proc && called_proc != nil {
+            called_struct, ok_called_struct := proc_single_struct_return(
+                e,
+                called_proc,
+            )
+            return ok_called_struct && called_struct.name == struct_decl.name &&
+                   len(called_proc.owned_result_fields) > 0
+        }
         return false
     }
     for item, item_index in form.items[1:] {
@@ -1336,6 +1347,17 @@ aggregate_result_value_ownership_is_uncertain :: proc(
     head := map_name(form.items[0].text)
     defer delete(head)
     if head != struct_decl.name {
+        if _, called_proc, ok_proc := resolve_proc_call_decl(
+            e,
+            form.items[0].text,
+        ); ok_proc && called_proc != nil {
+            called_struct, ok_called_struct := proc_single_struct_return(
+                e,
+                called_proc,
+            )
+            return ok_called_struct && called_struct.name == struct_decl.name &&
+                   called_proc.owned_result_fields_uncertain
+        }
         return false
     }
     relevant_fields := 0
@@ -1652,8 +1674,14 @@ infer_owned_union_result_variant :: proc(
     } else {
         return nil, false
     }
-    if variant == nil || !type_supports_automatic_native_delete(variant.ty) ||
-       !aggregate_result_value_is_owned(e, form.items[value_index], nil) {
+    if variant == nil ||
+       !ownership_type_contains_automatic_native_delete(e, variant.ty) ||
+       !aggregate_result_value_contains_owned_for_type(
+           e,
+           form.items[value_index],
+           variant.ty,
+           nil,
+       ) {
         return nil, false
     }
     return variant, true

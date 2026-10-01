@@ -517,7 +517,7 @@ main :: proc() {
 		{
 			name = "owned aggregates transfer through branches and loops",
 			property = owned_aggregates_transfer_through_branches_and_loops,
-			description = "generated conditional construction, conditional storage, and repeated loop storage transfer every owned leaf exactly once",
+			description = "generated conditional construction, conditional full or partial multi-result storage, and repeated loop storage transfer every owned leaf exactly once",
 			tags = COMPILER_OWNERSHIP_TAGS[:],
 		},
 		{
