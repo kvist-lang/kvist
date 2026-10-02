@@ -1051,6 +1051,54 @@ ownership_contract_registry_is_well_formed :: proc(t: ^testing.T) {
 }
 
 @(test)
+call_contract_normalizes_to_one_result_lifecycle :: proc(t: ^testing.T) {
+    lifecycle, ok := kvist.ownership_result_lifecycle_from_call_contract(
+        kvist.Ownership_Call_Contract{
+            result_count = 2,
+            result_index = 0,
+            result_type = "Capture",
+            result_flow = .Owned,
+            cleanup_kind = .Call,
+            cleanup_member = "destroy",
+            activation = .Sibling_True,
+            activation_index = 1,
+        },
+        "regex",
+    )
+    defer kvist.result_lifecycle_delete(&lifecycle)
+
+    testing.expect_value(t, ok, true)
+    testing.expect_value(t, lifecycle.kind, kvist.Result_Lifecycle_Kind.Owned_Custom)
+    testing.expect_value(t, lifecycle.cleanup_head, "regex.destroy")
+    testing.expect_value(t, lifecycle.result_type, "regex.Capture")
+    testing.expect_value(t, lifecycle.condition, kvist.Ownership_Activation.Sibling_True)
+    testing.expect_value(t, lifecycle.condition_index, 1)
+}
+
+@(test)
+imported_type_qualification_returns_owned_text_on_every_branch :: proc(
+    t: ^testing.T,
+) {
+    cases := [?]struct {
+        input:    string,
+        expected: string,
+    }{
+        {"Capture", "regex.Capture"},
+        {"^Capture", "^regex.Capture"},
+        {"[dynamic]Capture", "[dynamic]regex.Capture"},
+        {"proc(Capture) -> Capture", "proc(regex.Capture) -> regex.Capture"},
+    }
+    for test_case in cases {
+        qualified := kvist.qualify_imported_odin_type(
+            "regex",
+            test_case.input,
+        )
+        testing.expect_value(t, qualified, test_case.expected)
+        delete(qualified)
+    }
+}
+
+@(test)
 ownership_ir_classifies_straight_line_and_moved_cleanup :: proc(t: ^testing.T) {
     graph := kvist.Ownership_IR_Proc{
         place_count = 2,
@@ -1412,6 +1460,114 @@ ownership_ir_cleanup_plan_is_per_exit :: proc(t: ^testing.T) {
     invalid_plan := kvist.ownership_ir_build_cleanup_plan(shadow, analysis)
     defer kvist.ownership_ir_cleanup_plan_delete(&invalid_plan)
     testing.expect_value(t, invalid_plan.valid, false)
+}
+
+@(test)
+ownership_ir_cleanup_plan_verifier_rejects_corrupted_plans :: proc(t: ^testing.T) {
+    graph := kvist.Ownership_IR_Proc{
+        place_count = 1,
+        entry = 0,
+    }
+    defer kvist.ownership_ir_proc_delete(&graph)
+    entry := kvist.ownership_ir_add_block(&graph)
+    boundary := kvist.ownership_ir_add_block(&graph)
+    kvist.ownership_ir_add_event(&graph, entry, {kind = .Acquire, place = 0})
+    kvist.ownership_ir_add_successor(&graph, entry, boundary)
+
+    scope_exits: [dynamic]kvist.Ownership_IR_Exit
+    defer delete(scope_exits)
+    append(
+        &scope_exits,
+        kvist.Ownership_IR_Exit{
+            kind = .Fallthrough,
+            source = .Synthetic,
+            block = boundary,
+        },
+    )
+    places: [dynamic]kvist.Ownership_IR_Shadow_Place
+    defer delete(places)
+    append(&places, kvist.Ownership_IR_Shadow_Place{
+        place = 0,
+        name = "data",
+        cleanup_kind = .Call,
+        cleanup_head = "delete",
+        scope_exits = scope_exits,
+    })
+    shadow := kvist.Ownership_IR_Shadow_Proc{
+        graph = graph,
+        places = places,
+    }
+    analysis := kvist.ownership_ir_analyze(graph)
+    defer kvist.ownership_ir_analysis_delete(&analysis)
+    plan := kvist.ownership_ir_build_cleanup_plan(shadow, analysis)
+    defer kvist.ownership_ir_cleanup_plan_delete(&plan)
+
+    message, ok := kvist.ownership_ir_verify_cleanup_plan(
+        shadow,
+        analysis,
+        plan,
+    )
+    testing.expect_value(t, ok, true)
+    testing.expect_value(t, message, "")
+    if len(plan.actions) != 1 {
+        return
+    }
+
+    valid_action := plan.actions[0]
+    resize(&plan.actions, 0)
+    message, ok = kvist.ownership_ir_verify_cleanup_plan(
+        shadow,
+        analysis,
+        plan,
+    )
+    testing.expect_value(t, ok, false)
+    testing.expect_value(
+        t,
+        strings.contains(message, "has 0 cleanup actions"),
+        true,
+    )
+
+    append(&plan.actions, valid_action)
+    plan.actions[0].need = .None
+    message, ok = kvist.ownership_ir_verify_cleanup_plan(
+        shadow,
+        analysis,
+        plan,
+    )
+    testing.expect_value(t, ok, false)
+    testing.expect_value(t, strings.contains(message, "expected always"), true)
+
+    plan.actions[0] = valid_action
+    append(&plan.actions, valid_action)
+    message, ok = kvist.ownership_ir_verify_cleanup_plan(
+        shadow,
+        analysis,
+        plan,
+    )
+    testing.expect_value(t, ok, false)
+    testing.expect_value(
+        t,
+        strings.contains(message, "has 2 cleanup actions"),
+        true,
+    )
+
+    resize(&plan.actions, 1)
+    kvist.ownership_ir_add_event(
+        &graph,
+        entry,
+        {kind = .Schedule_Destroy, place = 0},
+    )
+    message, ok = kvist.ownership_ir_verify_cleanup_plan(
+        shadow,
+        analysis,
+        plan,
+    )
+    testing.expect_value(t, ok, false)
+    testing.expect_value(
+        t,
+        strings.contains(message, "scheduled cleanup"),
+        true,
+    )
 }
 
 @(test)
@@ -1810,62 +1966,62 @@ ownership_ir_shadow_lowers_real_resource_control_flow :: proc(t: ^testing.T) {
 
     testing.expect_value(
         t,
-        strings.contains(report, "direct_read\tdata\tengine=always\tlegacy=always\tmatch=true\tcleanup=delete"),
+        strings.contains(report, "direct_read\tdata\tengine=always\tcontract=always\tmatch=true\tcleanup=delete"),
         true,
     )
     testing.expect_value(
         t,
-        strings.contains(report, "simple_read\tdata\tengine=always\tlegacy=always\tmatch=true\tcleanup=delete\tscheduled=0\ttransfers=0\texits=1\tplan-always=1\tplan-conditional=0\tplan-none=0\tplacement=scope-defer\tadoptable=true"),
+        strings.contains(report, "simple_read\tdata\tengine=always\tcontract=always\tmatch=true\tcleanup=delete\tscheduled=0\ttransfers=0\texits=1\tplan-always=1\tplan-conditional=0\tplan-none=0\tplacement=scope-defer\tadoptable=true"),
         true,
     )
     testing.expect_value(
         t,
-        strings.contains(report, "direct_read\tdata\tengine=always\tlegacy=always\tmatch=true\tcleanup=delete\tscheduled=0\ttransfers=0\texits=2\tplan-always=2\tplan-conditional=0\tplan-none=0\tplacement=scope-defer\tadoptable=true"),
+        strings.contains(report, "direct_read\tdata\tengine=always\tcontract=always\tmatch=true\tcleanup=delete\tscheduled=0\ttransfers=0\texits=2\tplan-always=2\tplan-conditional=0\tplan-none=0\tplacement=scope-defer\tadoptable=true"),
         true,
     )
     testing.expect_value(
         t,
-        strings.contains(report, "wrapped_read\tdata\tengine=always\tlegacy=always\tmatch=true\tcleanup=delete"),
+        strings.contains(report, "wrapped_read\tdata\tengine=always\tcontract=always\tmatch=true\tcleanup=delete"),
         true,
     )
     testing.expect_value(
         t,
-        strings.contains(report, "direct_open\tfile\tengine=conditional\tlegacy=conditional\tmatch=true\tcleanup=os.close\tscheduled=0\ttransfers=0\texits=1\tplan-always=0\tplan-conditional=1\tplan-none=0\tplacement=scope-defer\tadoptable=true\tboundaries="),
+        strings.contains(report, "direct_open\tfile\tengine=conditional\tcontract=conditional\tmatch=true\tcleanup=os.close\tscheduled=0\ttransfers=0\texits=1\tplan-always=0\tplan-conditional=1\tplan-none=0\tplacement=scope-defer\tadoptable=true\tboundaries="),
         true,
     )
     testing.expect_value(
         t,
-        strings.contains(report, "transfer_read\tdata\tengine=none\tlegacy=none\tmatch=true\tcleanup=delete"),
+        strings.contains(report, "transfer_read\tdata\tengine=none\tcontract=none\tmatch=true\tcleanup=delete"),
         true,
     )
     testing.expect_value(
         t,
-        strings.contains(report, "alias_transfer\tdata\tengine=none\tlegacy=none\tmatch=true\tcleanup=delete"),
+        strings.contains(report, "alias_transfer\tdata\tengine=none\tcontract=none\tmatch=true\tcleanup=delete"),
         true,
     )
     testing.expect_value(
         t,
-        strings.contains(report, "explicit_close\tfile\tengine=none\tlegacy=none\tmatch=true\tcleanup=os.close"),
+        strings.contains(report, "explicit_close\tfile\tengine=none\tcontract=none\tmatch=true\tcleanup=os.close"),
         true,
     )
     testing.expect_value(
         t,
-        strings.contains(report, "deferred_read\tdata\tengine=none\tlegacy=none\tmatch=true\tcleanup=delete\tscheduled=1\ttransfers=0"),
+        strings.contains(report, "deferred_read\tdata\tengine=none\tcontract=none\tmatch=true\tcleanup=delete\tscheduled=1\ttransfers=0"),
         true,
     )
     testing.expect_value(
         t,
-        strings.contains(report, "deferred_close\tfile\tengine=none\tlegacy=none\tmatch=true\tcleanup=os.close\tscheduled=1\ttransfers=0"),
+        strings.contains(report, "deferred_close\tfile\tengine=none\tcontract=none\tmatch=true\tcleanup=os.close\tscheduled=1\ttransfers=0"),
         true,
     )
     testing.expect_value(
         t,
-        strings.contains(report, "wrapped_close\tfile\tengine=none\tlegacy=none\tmatch=true\tcleanup=os.close\tscheduled=0\ttransfers=1"),
+        strings.contains(report, "wrapped_close\tfile\tengine=none\tcontract=none\tmatch=true\tcleanup=os.close\tscheduled=0\ttransfers=1"),
         true,
     )
     testing.expect_value(
         t,
-        strings.contains(report, "errdeferred_read\tdata\tengine=none\tlegacy=none\tmatch=true\tcleanup=delete\tscheduled=1\ttransfers=0"),
+        strings.contains(report, "errdeferred_read\tdata\tengine=none\tcontract=none\tmatch=true\tcleanup=delete\tscheduled=1\ttransfers=0"),
         true,
     )
     testing.expect_value(
@@ -1900,7 +2056,7 @@ ownership_ir_shadow_lowers_real_resource_control_flow :: proc(t: ^testing.T) {
     )
     testing.expect_value(
         t,
-        strings.contains(report, "fallthrough_cleanup\tdata\tengine=conditional\tlegacy=none\tmatch=false\tcleanup=delete\tscheduled=0\ttransfers=0\texits=2\tplan-always=1\tplan-conditional=0\tplan-none=1\tplacement=per-exit\tadoptable=true\tboundaries="),
+        strings.contains(report, "fallthrough_cleanup\tdata\tengine=conditional\tcontract=none\tmatch=false\tcleanup=delete\tscheduled=0\ttransfers=0\texits=2\tplan-always=1\tplan-conditional=0\tplan-none=1\tplacement=per-exit\tadoptable=true\tboundaries="),
         true,
     )
     testing.expect_value(
@@ -1910,7 +2066,7 @@ ownership_ir_shadow_lowers_real_resource_control_flow :: proc(t: ^testing.T) {
     )
     testing.expect_value(
         t,
-        strings.contains(report, "branch_delete\tdata\tengine=conditional\tlegacy=none\tmatch=false\tcleanup=delete"),
+        strings.contains(report, "branch_delete\tdata\tengine=conditional\tcontract=none\tmatch=false\tcleanup=delete"),
         true,
     )
 }

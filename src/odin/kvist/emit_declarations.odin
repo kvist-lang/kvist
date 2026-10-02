@@ -351,12 +351,16 @@ emit_decl :: proc(e: ^Emitter, decl: IR_Decl) -> (Compile_Error, bool) {
         previous_ownership_shadow := e.current_ownership_shadow
         previous_ownership_plan := e.current_ownership_plan
         ownership_proc := decl.proc_decl
-        ownership_shadow, ownership_plan := ownership_ir_plan_proc(
+        ownership_shadow, ownership_plan, ownership_error, ownership_ok := ownership_ir_plan_proc(
             e,
             &ownership_proc,
         )
         defer ownership_ir_cleanup_plan_delete(&ownership_plan)
         defer ownership_ir_shadow_proc_delete(&ownership_shadow)
+        if !ownership_ok {
+            ownership_error.span = decl.span
+            return ownership_error, false
+        }
         emit_ownership_plan_diagnostics(e, ownership_plan)
         ownership_contract := procedure_result_ownership_contract(
             &ownership_proc,

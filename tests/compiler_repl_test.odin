@@ -3689,7 +3689,7 @@ cli_repl_accepts_pointer_returns_from_context_and_imported_packages :: proc(
         t,
         strings.contains(
             output,
-            `"code":"KVO003","confidence":"definite","phase":"compile"`,
+            `"code":"KVO003","confidence":"definite","name":"use-after-ownership-transfer","phase":"compile"`,
         ),
         true,
     )
@@ -7507,7 +7507,7 @@ cli_repl_jsonl_executes_native_multi_form_generation :: proc(t: ^testing.T) {
     testing.expect_value(t, strings.contains(output, `"physical-result-ownership-transfers"`), true)
     testing.expect_value(t, strings.contains(output, `"id":"separate-stderr","kind":"output","success":true,"generation":23,"stream":"stderr","text":"native-stderr\n"`), true)
     testing.expect_value(t, strings.contains(output, `"id":"unretained-pointer","kind":"diagnostics","success":true,"generation":24`), true)
-    testing.expect_value(t, strings.contains(output, `"diagnostics":[{"severity":"warning","code":"KVR001","confidence":"definite","phase":"compile"`), true)
+    testing.expect_value(t, strings.contains(output, `"diagnostics":[{"severity":"warning","code":"KVR001","confidence":"definite","name":"unretained-repl-result","phase":"compile"`), true)
     testing.expect_value(t, strings.contains(output, `"source_path":"/virtual/pointer.kvist","line":8,"column":1`), true)
     testing.expect_value(t, strings.contains(output, `"id":"unretained-pointer","kind":"complete","success":true,"generation":24`), true)
     testing.expect_value(t, strings.contains(output, `"id":"inspect-history-v1","kind":"inspection","success":true,"generation":26`), true)

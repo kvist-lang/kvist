@@ -39,6 +39,21 @@ lifetimes_command :: proc(input: string) {
     fmt.print(output)
 }
 
+explain_warning_command :: proc(query: string) {
+    code, found := kvist.compile_warning_code_from_text(query)
+    if !found {
+        fmt.eprintf("unknown diagnostic code or name: %s\n", query)
+        fmt.eprintln("use KVO001-KVO008 or a diagnostic name such as overwrite-before-cleanup")
+        exit_with_timing(2)
+    }
+    fmt.printf(
+        "%s — %s\n\n%s\n",
+        kvist.compile_warning_code_text(code),
+        kvist.compile_warning_name(code),
+        kvist.compile_warning_description(code),
+    )
+}
+
 editor_symbols_command :: proc(input: string, identifier := "") {
     data := read_source_or_exit(input)
     defer delete(transmute([]byte)data)

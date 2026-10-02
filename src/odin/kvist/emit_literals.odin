@@ -1300,14 +1300,14 @@ qualify_imported_odin_type :: proc(alias, type_text: string) -> string {
     if strings.has_prefix(text, "^") {
         inner := qualify_imported_odin_type(alias, text[1:])
         defer delete(inner)
-        return fmt.tprintf("^%s", inner)
+        return fmt.aprintf("^%s", inner)
     }
     if strings.has_prefix(text, "[") {
         close := strings.index(text, "]")
         if close > 0 && close+1 < len(text) {
             inner := qualify_imported_odin_type(alias, text[close+1:])
             defer delete(inner)
-            return fmt.tprintf("%s%s", text[:close+1], inner)
+            return fmt.aprintf("%s%s", text[:close+1], inner)
         }
     }
     if proc_type, ok_proc := qualify_imported_odin_proc_type(alias, text); ok_proc {
@@ -1316,7 +1316,7 @@ qualify_imported_odin_type :: proc(alias, type_text: string) -> string {
     if strings.contains_any(text, ".[](), ") || strings.has_prefix(text, "#") {
         return strings.clone(text)
     }
-    return fmt.tprintf("%s.%s", alias, text)
+    return fmt.aprintf("%s.%s", alias, text)
 }
 
 imported_odin_type_parts :: proc(type_text: string) -> (alias, member: string, ok: bool) {

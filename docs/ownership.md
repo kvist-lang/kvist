@@ -75,12 +75,24 @@ and maps use known `delete` semantics. Managed `Data` and supported aggregates
 use their structural lifecycle. Opaque resources require an exact destructor
 contract or explicit cleanup.
 
-The `legacy_cleanup` field in the shadow representation is a temporary parity
-and adoption guard for exact foreign-result contracts. It is not a second
-diagnostic engine. KVO001–KVO006 and KVO008 are created as facts by the
-ownership plan and formatted centrally. KVO007 remains a deliberately
-syntactic warning because it explains when a source-level `defer` inside a
-loop executes rather than reasoning about ownership state.
+Opaque foreign calls enter the same model through exact `Ownership_Call_Contract`
+records. One normalization step converts a contract's result flow, cleanup
+policy, activation condition, and result type into the result lifecycle used by
+lowering. The resulting `contract_cleanup` need is an adoption guard for the
+canonical IR plan, not a second diagnostic engine.
+
+Before emission, an independent verifier checks the completed plan against the
+control-flow analysis and lowered ownership metadata. Every tracked lexical
+exit must have exactly one matching action; action reachability and cleanup
+need must agree with dataflow; places, owner groups, projections, cleanup
+metadata, and boundary blocks must be valid; and a scheduled destructor cannot
+also authorize automatic cleanup. Verification failure is an internal compiler
+error, so an inconsistent plan cannot silently become generated Odin.
+
+KVO001–KVO006 and KVO008 are created as facts by the ownership plan and
+formatted centrally. KVO007 remains a deliberately syntactic warning because
+it explains when a source-level `defer` inside a loop executes rather than
+reasoning about ownership state.
 
 ## Manual Control
 

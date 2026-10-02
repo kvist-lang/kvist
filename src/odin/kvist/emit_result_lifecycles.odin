@@ -49,6 +49,52 @@ result_lifecycles_match :: proc(left, right: Result_Lifecycle) -> bool {
            left.condition_index == right.condition_index
 }
 
+// Call contracts are the canonical source for opaque foreign ownership. This
+// is the only conversion from their public flow/cleanup vocabulary to the
+// emitter's concrete per-result lifecycle.
+ownership_result_lifecycle_from_call_contract :: proc(
+    contract: Ownership_Call_Contract,
+    mapped_alias: string,
+) -> (Result_Lifecycle, bool) {
+    lifecycle := Result_Lifecycle{
+        condition = contract.activation,
+        condition_index = contract.activation_index,
+    }
+    #partial switch contract.result_flow {
+    case .Borrowed:
+        if contract.cleanup_kind != .None {
+            return {}, false
+        }
+        lifecycle.kind = .Borrowed
+    case .Owned:
+        #partial switch contract.cleanup_kind {
+        case .Type_Default:
+            lifecycle.kind = .Owned_Delete
+        case .Call:
+            if mapped_alias == "" || contract.cleanup_member == "" {
+                return {}, false
+            }
+            lifecycle.kind = .Owned_Custom
+            lifecycle.cleanup_head = fmt.aprintf(
+                "%s.%s",
+                mapped_alias,
+                contract.cleanup_member,
+            )
+        case .None:
+            return {}, false
+        }
+    case .Unknown:
+        return {}, false
+    }
+    if contract.result_type != "" {
+        lifecycle.result_type = qualify_imported_odin_type(
+            mapped_alias,
+            contract.result_type,
+        )
+    }
+    return lifecycle, true
+}
+
 result_symbol_maps_to_name :: proc(form: CST_Form, name: string) -> bool {
     if form.kind != .Symbol {
         return false
@@ -123,25 +169,12 @@ known_foreign_result_lifecycle :: proc(
     if !known {
         return {}, false
     }
-    kind := Result_Lifecycle_Kind.Unknown
-    #partial switch contract.result_flow {
-    case .Borrowed:
-        kind = .Borrowed
-    case .Owned:
-        kind = .Owned_Delete if contract.cleanup_kind == .Type_Default else .Owned_Custom
-    }
     mapped_alias := map_name(alias)
     defer delete(mapped_alias)
-    cleanup_head := ""
-    if contract.cleanup_kind == .Call {
-        cleanup_head = fmt.tprintf("%s.%s", mapped_alias, contract.cleanup_member)
-    }
-    return Result_Lifecycle{
-        kind = kind,
-        cleanup_head = cleanup_head,
-        condition = contract.activation,
-        condition_index = contract.activation_index,
-    }, true
+    return ownership_result_lifecycle_from_call_contract(
+        contract,
+        mapped_alias,
+    )
 }
 
 known_foreign_result_type :: proc(

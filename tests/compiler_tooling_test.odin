@@ -9,6 +9,87 @@ import "core:testing"
 import kvist "../src/odin/kvist"
 
 @(test)
+ownership_diagnostics_have_stable_codes_and_readable_names :: proc(
+    t: ^testing.T,
+) {
+    codes := [?]kvist.Compile_Warning_Code{
+        .Ownership_Discarded_Result,
+        .Ownership_Unreleased_Local,
+        .Ownership_Use_After_Transfer,
+        .Ownership_Overwrite,
+        .Ownership_Borrowed_Escape,
+        .Ownership_Delete_Borrowed,
+        .Ownership_Defer_In_Loop,
+        .Ownership_Automatic_Cleanup_Skipped,
+    }
+    code_texts := [?]string{
+        "KVO001", "KVO002", "KVO003", "KVO004",
+        "KVO005", "KVO006", "KVO007", "KVO008",
+    }
+    names := [?]string{
+        "discarded-owned-result",
+        "unreleased-owned-local",
+        "use-after-ownership-transfer",
+        "overwrite-before-cleanup",
+        "invalid-borrow-lifetime",
+        "delete-of-borrowed-value",
+        "defer-inside-loop",
+        "automatic-cleanup-not-proven",
+    }
+    for code, index in codes {
+        testing.expect_value(
+            t,
+            kvist.compile_warning_code_text(code),
+            code_texts[index],
+        )
+        testing.expect_value(
+            t,
+            kvist.compile_warning_name(code),
+            names[index],
+        )
+        testing.expect_value(
+            t,
+            kvist.compile_warning_description(code) != "",
+            true,
+        )
+        parsed_code, parsed_code_ok :=
+            kvist.compile_warning_code_from_text(code_texts[index])
+        testing.expect_value(t, parsed_code_ok, true)
+        testing.expect_value(t, parsed_code, code)
+        parsed_name, parsed_name_ok :=
+            kvist.compile_warning_code_from_text(names[index])
+        testing.expect_value(t, parsed_name_ok, true)
+        testing.expect_value(t, parsed_name, code)
+    }
+}
+
+@(test)
+formatted_ownership_warning_includes_code_and_name :: proc(t: ^testing.T) {
+    warning := kvist.Compile_Warning{
+        message = "owned local value is overwritten before cleanup",
+        span = {start = 0, end = 5},
+        line = 1,
+        column = 1,
+        code = .Ownership_Overwrite,
+        confidence = .Conservative,
+    }
+    formatted := kvist.format_compile_warning(
+        "example.kvist",
+        "value",
+        warning,
+    )
+    defer delete(formatted)
+    testing.expect_value(
+        t,
+        strings.contains(
+            formatted,
+            "warning[KVO004/overwrite-before-cleanup, conservative]",
+        ),
+        true,
+    )
+}
+
+@(test)
 symbols_source_indexes_top_level_forms :: proc(t: ^testing.T) {
     source := `(package main)
 (import "core:strings" :as strings)

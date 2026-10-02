@@ -243,6 +243,7 @@ Repl_Diagnostic :: struct {
     severity:    string,
     code:        string `json:",omitempty"`,
     confidence:  string `json:",omitempty"`,
+    name:        string `json:",omitempty"`,
     phase:       string,
     message:     string,
     source_path: string `json:",omitempty"`,
@@ -1845,6 +1846,7 @@ repl_diagnostic_slice_delete :: proc(
         delete(diagnostic.severity)
         delete(diagnostic.code)
         delete(diagnostic.confidence)
+        delete(diagnostic.name)
         delete(diagnostic.phase)
         delete(diagnostic.message)
         delete(diagnostic.source_path)
@@ -1860,6 +1862,7 @@ repl_diagnostic_clone :: proc(
     cloned.severity = strings.clone(diagnostic.severity)
     cloned.code = strings.clone(diagnostic.code)
     cloned.confidence = strings.clone(diagnostic.confidence)
+    cloned.name = strings.clone(diagnostic.name)
     cloned.phase = strings.clone(diagnostic.phase)
     cloned.message = strings.clone(diagnostic.message)
     cloned.source_path = strings.clone(diagnostic.source_path)
@@ -9516,6 +9519,7 @@ repl_compile_generation :: proc(
                     warning_start_column,
             )
             code := kvist.compile_warning_code_text(warning.code)
+            name := kvist.compile_warning_name(warning.code)
             confidence := "definite"
             if warning.confidence == .Conservative {
                 confidence = "conservative"
@@ -9524,6 +9528,7 @@ repl_compile_generation :: proc(
                 severity = strings.clone("warning"),
                 code = strings.clone(code),
                 confidence = strings.clone(confidence),
+                name = strings.clone(name),
                 phase = strings.clone("compile"),
                 message = strings.clone(warning.message),
                 source_path = strings.clone(warning_path),

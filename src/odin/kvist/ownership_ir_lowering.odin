@@ -57,7 +57,7 @@ Ownership_IR_Shadow_Place :: struct {
     activation:               Ownership_Activation,
     activation_index:         int,
     scope_exits:              [dynamic]Ownership_IR_Exit,
-    legacy_cleanup:           Ownership_IR_Cleanup_Need,
+    contract_cleanup:         Ownership_IR_Cleanup_Need,
     cleanup_skip_reason:      Ownership_IR_Cleanup_Skip_Reason,
     cleanup_scheduled:        bool,
     diagnose_use_after_transfer: bool,
@@ -498,7 +498,7 @@ ownership_ir_schedule_binding_cleanup :: proc(
     }
 }
 
-ownership_ir_legacy_cleanup_need :: proc(
+ownership_ir_contract_cleanup_need :: proc(
     e: ^Emitter,
     binding: Binding,
     bindings: []Binding,
@@ -541,7 +541,7 @@ ownership_ir_add_shadow_place :: proc(
     name, cleanup_head: string,
     activation: Ownership_Activation,
     activation_index: int,
-    legacy_cleanup: Ownership_IR_Cleanup_Need,
+    contract_cleanup: Ownership_IR_Cleanup_Need,
     direct_imported_contract: bool,
     span: Span,
     ty := "",
@@ -576,7 +576,7 @@ ownership_ir_add_shadow_place :: proc(
         cleanup_result_count = cleanup_result_count,
         activation = activation,
         activation_index = activation_index,
-        legacy_cleanup = legacy_cleanup,
+        contract_cleanup = contract_cleanup,
         cleanup_skip_reason = cleanup_skip_reason,
         cleanup_scheduled = cleanup_scheduled,
         diagnose_use_after_transfer = diagnose_use_after_transfer,
@@ -1066,7 +1066,7 @@ ownership_ir_lower_binding :: proc(
                     lifecycle,
                 )
                 result_lifecycle_delete(&lifecycle)
-                legacy_cleanup := ownership_ir_legacy_cleanup_need(
+                contract_cleanup := ownership_ir_contract_cleanup_need(
                     lowering.emitter,
                     binding,
                     bindings,
@@ -1097,7 +1097,7 @@ ownership_ir_lower_binding :: proc(
                     cleanup_head,
                     activation,
                     activation_index,
-                    legacy_cleanup,
+                    contract_cleanup,
                     direct_imported_contract,
                     binding.target_span,
                     cleanup_skip_reason = cleanup_skip_reason,
@@ -3959,7 +3959,12 @@ ownership_ir_lower_proc :: proc(
 ownership_ir_plan_proc :: proc(
     e: ^Emitter,
     decl: ^Proc_Decl,
-) -> (Ownership_IR_Shadow_Proc, Ownership_IR_Cleanup_Plan) {
+) -> (
+    Ownership_IR_Shadow_Proc,
+    Ownership_IR_Cleanup_Plan,
+    Compile_Error,
+    bool,
+) {
     shadow := ownership_ir_lower_proc(e, decl)
     analysis := ownership_ir_analyze(shadow.graph)
     ownership_ir_enable_safe_aggregate_reassign_cleanup(&shadow, analysis)
@@ -3988,8 +3993,248 @@ ownership_ir_plan_proc :: proc(
         &plan,
     )
     ownership_ir_borrow_analysis_delete(&borrow_analysis)
+    verification_message, verified := ownership_ir_verify_cleanup_plan(
+        shadow,
+        analysis,
+        plan,
+    )
+    if !verified {
+        plan.valid = false
+        ownership_ir_analysis_delete(&analysis)
+        return shadow, plan, Compile_Error{
+            message = fmt.tprintf(
+                "internal ownership plan verification failed in %s: %s",
+                decl.name,
+                verification_message,
+            ),
+        }, false
+    }
     ownership_ir_analysis_delete(&analysis)
-    return shadow, plan
+    return shadow, plan, {}, true
+}
+
+ownership_ir_scope_exit_matches_action :: proc(
+    exit: Ownership_IR_Exit,
+    action: Ownership_IR_Cleanup_Action,
+) -> bool {
+    return exit.block == action.block &&
+           exit.kind == action.exit_kind &&
+           exit.source == action.exit_source &&
+           exit.span == action.span
+}
+
+ownership_ir_verify_cleanup_place :: proc(
+    result: Ownership_IR_Shadow_Proc,
+    analysis: Ownership_IR_Analysis,
+    plan: Ownership_IR_Cleanup_Plan,
+    place: Ownership_IR_Shadow_Place,
+) -> (string, bool) {
+    if place.place < 0 || place.place >= result.graph.place_count {
+        return fmt.tprintf("place %s has invalid index %d", place.name, place.place), false
+    }
+    if place.projection.owner_group != 0 &&
+       !ownership_ir_owner_group_is_valid(
+           result,
+           place.projection.owner_group,
+       ) {
+        return fmt.tprintf(
+            "place %s has invalid owner group %d",
+            place.name,
+            place.projection.owner_group,
+        ), false
+    }
+    if place.projection.path != "" && place.projection.owner_group == 0 {
+        return fmt.tprintf(
+            "place %s has a projection path without an owner group",
+            place.name,
+        ), false
+    }
+    #partial switch place.cleanup_kind {
+    case .Call:
+        if place.cleanup_head == "" {
+            return fmt.tprintf("place %s has call cleanup without a target", place.name), false
+        }
+    case .Value:
+        if place.ty == "" {
+            return fmt.tprintf("place %s has value cleanup without a type", place.name), false
+        }
+    case .Owned_Union_Result:
+        if place.cleanup_result_index < 0 ||
+           place.cleanup_result_index >= place.cleanup_result_count {
+            return fmt.tprintf("place %s has invalid union cleanup metadata", place.name), false
+        }
+    case .None:
+    }
+
+    if place.cleanup_kind == .None && !place.diagnose_unreleased {
+        for action in plan.actions {
+            if action.place == place.place {
+                return fmt.tprintf(
+                    "untracked place %s has a cleanup action",
+                    place.name,
+                ), false
+            }
+        }
+        return "", true
+    }
+
+    for exit in place.scope_exits {
+        match_count := 0
+        for action in plan.actions {
+            if action.place == place.place &&
+               ownership_ir_scope_exit_matches_action(exit, action) {
+                match_count += 1
+            }
+        }
+        if match_count != 1 {
+            return fmt.tprintf(
+                "place %s exit block %d has %d cleanup actions",
+                place.name,
+                exit.block,
+                match_count,
+            ), false
+        }
+    }
+
+    has_scheduled_cleanup := false
+    for block in result.graph.blocks {
+        for event in block.events {
+            if event.place == place.place &&
+               event.kind == .Schedule_Destroy {
+                has_scheduled_cleanup = true
+            }
+        }
+    }
+    // A direct Destroy and an automatic action may cover different branches.
+    // A scheduled destructor already covers every matching scope exit, so no
+    // cleanup obligation may remain for the emitter to adopt.
+    if has_scheduled_cleanup &&
+       ownership_ir_cleanup_plan_need(plan, place.place) != .None {
+        return fmt.tprintf(
+            "place %s has both scheduled cleanup and a remaining cleanup obligation",
+            place.name,
+        ), false
+    }
+
+    for action in plan.actions {
+        if action.place != place.place {
+            continue
+        }
+        if action.block < 0 || action.block >= len(result.graph.blocks) ||
+           action.block >= len(analysis.blocks) {
+            return fmt.tprintf(
+                "place %s action has invalid block %d",
+                place.name,
+                action.block,
+            ), false
+        }
+        boundary_count := 0
+        for exit in place.scope_exits {
+            if ownership_ir_scope_exit_matches_action(exit, action) {
+                boundary_count += 1
+            }
+        }
+        if boundary_count != 1 {
+            return fmt.tprintf(
+                "place %s action in block %d has %d matching exits",
+                place.name,
+                action.block,
+                boundary_count,
+            ), false
+        }
+        block_facts := analysis.blocks[action.block]
+        if action.reachable != block_facts.reachable {
+            return fmt.tprintf(
+                "place %s action reachability disagrees with block %d",
+                place.name,
+                action.block,
+            ), false
+        }
+        expected_need := Ownership_IR_Cleanup_Need.None
+        if block_facts.reachable {
+            if place.place >= len(block_facts.entry) {
+                return fmt.tprintf(
+                    "place %s has no entry fact in block %d",
+                    place.name,
+                    action.block,
+                ), false
+            }
+            expected_need = ownership_ir_cleanup_need(
+                block_facts.entry[place.place],
+            )
+        }
+        if action.need != expected_need {
+            return fmt.tprintf(
+                "place %s action in block %d has cleanup need %s, expected %s",
+                place.name,
+                action.block,
+                ownership_ir_cleanup_need_text(action.need),
+                ownership_ir_cleanup_need_text(expected_need),
+            ), false
+        }
+    }
+    return "", true
+}
+
+ownership_ir_verify_cleanup_plan :: proc(
+    result: Ownership_IR_Shadow_Proc,
+    analysis: Ownership_IR_Analysis,
+    plan: Ownership_IR_Cleanup_Plan,
+) -> (string, bool) {
+    if !analysis.valid || !analysis.converged {
+        return "ownership dataflow is invalid or did not converge", false
+    }
+    if !plan.valid {
+        return "cleanup plan is marked invalid", false
+    }
+    if len(result.graph.blocks) != len(analysis.blocks) {
+        return "analysis block count differs from the ownership graph", false
+    }
+    if result.graph.place_count < 0 ||
+       len(result.places) != result.graph.place_count {
+        return "ownership metadata count differs from the ownership graph", false
+    }
+    seen_places := make([]bool, result.graph.place_count)
+    defer delete(seen_places)
+    for place in result.places {
+        if place.place < 0 || place.place >= len(seen_places) {
+            return fmt.tprintf("place %s is outside the ownership graph", place.name), false
+        }
+        if seen_places[place.place] {
+            return fmt.tprintf("ownership place %d is defined more than once", place.place), false
+        }
+        seen_places[place.place] = true
+        message, ok := ownership_ir_verify_cleanup_place(
+            result,
+            analysis,
+            plan,
+            place,
+        )
+        if !ok {
+            return message, false
+        }
+    }
+    for action, action_index in plan.actions {
+        if action.place < 0 || action.place >= len(seen_places) ||
+           !seen_places[action.place] {
+            return fmt.tprintf(
+                "cleanup action %d references unknown place %d",
+                action_index,
+                action.place,
+            ), false
+        }
+        for previous in plan.actions[:action_index] {
+            if previous.place == action.place &&
+               previous.block == action.block {
+                return fmt.tprintf(
+                    "cleanup actions for place %d duplicate block %d",
+                    action.place,
+                    action.block,
+                ), false
+            }
+        }
+    }
+    return "", true
 }
 
 ownership_ir_reassignments_start_dead :: proc(
@@ -4562,10 +4807,10 @@ ownership_ir_scope_cleanup_candidate :: proc(
 ) -> bool {
     placement, need := ownership_ir_cleanup_plan_placement(plan, place.place)
     if !plan.valid ||
-       place.legacy_cleanup == .None ||
+       place.contract_cleanup == .None ||
        ownership_ir_place_has_manual_or_transfer_event(result, place.place) ||
        placement != .Scope_Defer ||
-       need != place.legacy_cleanup {
+       need != place.contract_cleanup {
         return false
     }
     return true
@@ -4621,7 +4866,7 @@ ownership_ir_per_exit_candidate :: proc(
     if !plan.valid ||
        (!place.direct_imported_contract && place.projection.owner_group == 0) ||
        place.cleanup_kind == .None ||
-       place.legacy_cleanup != .None ||
+       place.contract_cleanup != .None ||
        placement != .Per_Exit {
         return false
     }
@@ -4931,7 +5176,7 @@ ownership_ir_current_plan_authorizes_scope_cleanup :: proc(
     for place in e.current_ownership_shadow.places {
         if place.name != name ||
            place.span != binding.target_span ||
-           place.legacy_cleanup != expected {
+           place.contract_cleanup != expected {
             continue
         }
         return ownership_ir_scope_cleanup_candidate(
@@ -5663,7 +5908,7 @@ ownership_ir_run_shadow :: proc(e: ^Emitter) -> Ownership_IR_Shadow_Stats {
                     plan,
                     place.place,
                 )
-                if engine_need == place.legacy_cleanup {
+                if engine_need == place.contract_cleanup {
                     stats.matches += 1
                 } else {
                     stats.mismatches += 1
@@ -5754,12 +5999,12 @@ ownership_ir_shadow_source :: proc(
             )
             fmt.sbprintf(
                 &builder,
-                "%s\t%s\tengine=%s\tlegacy=%s\tmatch=%t\tcleanup=%s\tscheduled=%d\ttransfers=%d\texits=%d\tplan-always=%d\tplan-conditional=%d\tplan-none=%d\tplacement=%s\tadoptable=%t\tboundaries=",
+                "%s\t%s\tengine=%s\tcontract=%s\tmatch=%t\tcleanup=%s\tscheduled=%d\ttransfers=%d\texits=%d\tplan-always=%d\tplan-conditional=%d\tplan-none=%d\tplacement=%s\tadoptable=%t\tboundaries=",
                 decl.proc_decl.name,
                 place.name,
                 ownership_ir_cleanup_need_text(engine_need),
-                ownership_ir_cleanup_need_text(place.legacy_cleanup),
-                engine_need == place.legacy_cleanup,
+                ownership_ir_cleanup_need_text(place.contract_cleanup),
+                engine_need == place.contract_cleanup,
                 place.cleanup_head,
                 ownership_ir_event_count(
                     shadow.graph,

@@ -34,6 +34,7 @@ print_usage :: proc() {
     fmt.println("  kvist macroexpand <input.kvist> <form> [-o output.kvist] [--map output.map]")
     fmt.println("  kvist symbols <input.kvist>")
     fmt.println("  kvist lifetimes <input.kvist>")
+    fmt.println("  kvist explain <diagnostic-code-or-name>")
     fmt.println("  kvist editor-symbols <input.kvist> [identifier]")
     fmt.println("  kvist lookup <input.kvist> <identifier>")
     fmt.println("  kvist complete <input.kvist> [prefix]")
@@ -55,7 +56,7 @@ is_help_arg :: proc(text: string) -> bool {
 }
 
 is_command :: proc(text: string) -> bool {
-    return is_help_arg(text) || text == "compile" || text == "dev" || text == "build" || text == "check" || text == "frontend-check" || text == "run" || text == "test" || text == "eval" || text == "repl" || text == "nrepl" || text == "__repl-worker" || text == "expand" || text == "macroexpand" || text == "symbols" || text == "lifetimes" || text == "editor-symbols" || text == "lookup" || text == "complete" || text == "doc" || text == "xref" || text == "builtin-symbols" || text == "imported-symbols" || text == "package-symbols" || text == "root" || text == "cache"
+    return is_help_arg(text) || text == "compile" || text == "dev" || text == "build" || text == "check" || text == "frontend-check" || text == "run" || text == "test" || text == "eval" || text == "repl" || text == "nrepl" || text == "__repl-worker" || text == "expand" || text == "macroexpand" || text == "symbols" || text == "lifetimes" || text == "explain" || text == "editor-symbols" || text == "lookup" || text == "complete" || text == "doc" || text == "xref" || text == "builtin-symbols" || text == "imported-symbols" || text == "package-symbols" || text == "root" || text == "cache"
 }
 
 root_command :: proc() {
@@ -482,6 +483,14 @@ parse_lifetimes_command :: proc() {
     lifetimes_command(os.args[2])
 }
 
+parse_explain_command :: proc() {
+    if len(os.args) != 3 {
+        print_usage()
+        exit_with_timing(2)
+    }
+    explain_warning_command(os.args[2])
+}
+
 parse_editor_symbols_command :: proc() {
     if len(os.args) != 3 && len(os.args) != 4 {
         print_usage()
@@ -602,6 +611,8 @@ main :: proc() {
         parse_symbols_command()
     case "lifetimes":
         parse_lifetimes_command()
+    case "explain":
+        parse_explain_command()
     case "editor-symbols":
         parse_editor_symbols_command()
     case "lookup":

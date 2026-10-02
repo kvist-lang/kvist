@@ -2453,20 +2453,21 @@ Normal commands report definite findings. Add `--ownership-audit` to include
 conservative findings from the flow analysis:
 
 ```text
-warning[KVO001]: owned result from re.compile is discarded; destructure its results for automatic scoped cleanup, or return it
-warning[KVO002]: owned local xs is never deleted or returned; add (defer (delete xs)) or return it
-warning[KVO004]: owned local xs is overwritten before cleanup; delete it or return it before set!
-warning[KVO003, conservative]: owned local xs is used after ownership transfer
-warning[KVO005, conservative]: borrowed value escapes owner xs
-warning[KVO005]: borrowed value is used after owner `xs` has been destroyed; move the use before cleanup or create an owned copy
-warning[KVO006]: str.trim returns a borrowed view; do not delete it, delete the owner instead
-warning[KVO006, conservative]: borrowed local `view` must not be deleted; delete the owner instead
-warning[KVO008, conservative]: automatic cleanup for owned result `file` was skipped because it is captured by a closure; clean it up explicitly after its last use or transfer ownership
+warning[KVO001/discarded-owned-result]: owned result from re.compile is discarded; destructure its results for automatic scoped cleanup, or return it
+warning[KVO002/unreleased-owned-local]: owned local xs is never deleted or returned; add (defer (delete xs)) or return it
+warning[KVO004/overwrite-before-cleanup]: owned local xs is overwritten before cleanup; delete it or return it before set!
+warning[KVO003/use-after-ownership-transfer, conservative]: owned local xs is used after ownership transfer
+warning[KVO005/invalid-borrow-lifetime, conservative]: borrowed value escapes owner xs
+warning[KVO005/invalid-borrow-lifetime]: borrowed value is used after owner `xs` has been destroyed; move the use before cleanup or create an owned copy
+warning[KVO006/delete-of-borrowed-value]: str.trim returns a borrowed view; do not delete it, delete the owner instead
+warning[KVO006/delete-of-borrowed-value, conservative]: borrowed local `view` must not be deleted; delete the owner instead
+warning[KVO008/automatic-cleanup-not-proven, conservative]: automatic cleanup for owned result `file` was skipped because it is captured by a closure; clean it up explicitly after its last use or transfer ownership
 ```
 
 Equivalent findings at the same source location are printed once. The compiler
-API retains every warning with its stable `code` and `confidence` fields so
-tools can choose their own policy. Explicit deferred destructors whose names
+API retains every warning with separate stable `code`, readable `name`, and
+`confidence` fields so tools can choose their own policy. `kvist explain`
+accepts either the code or name. Explicit deferred destructors whose names
 identify destroy, free, close, or release operations are recognized as cleanup.
 
 The ownership analysis is intentionally conservative where a fact holds on

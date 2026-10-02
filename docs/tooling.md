@@ -12,6 +12,7 @@ kvist check file.kvist
 kvist frontend-check file.kvist
 kvist run file.kvist
 kvist test file.kvist
+kvist explain KVO004
 ```
 
 `compile` writes generated Odin. `build`, `check`, `run`, and `test` invoke
@@ -103,9 +104,30 @@ ownership warnings that are hidden by default:
 kvist check file.kvist --ownership-audit
 ```
 
-Warnings have stable codes and confidence levels, and their formatted output
-includes the relevant source line and caret. Ownership warnings are suppressed
-when the compiler proves and emits deterministic native cleanup.
+Warnings have stable codes, readable names, and confidence levels. Formatted
+output includes both identifiers plus the relevant source line and caret, for
+example `warning[KVO004/overwrite-before-cleanup, conservative]`. Editor JSON
+keeps `code`, `name`, and `confidence` as separate fields. Ownership warnings
+are suppressed when the compiler proves and emits deterministic native cleanup.
+
+Use either identifier to get the short, stable explanation without compiling a
+file:
+
+```sh
+kvist explain KVO004
+kvist explain overwrite-before-cleanup
+```
+
+| Code | Name |
+| --- | --- |
+| `KVO001` | `discarded-owned-result` |
+| `KVO002` | `unreleased-owned-local` |
+| `KVO003` | `use-after-ownership-transfer` |
+| `KVO004` | `overwrite-before-cleanup` |
+| `KVO005` | `invalid-borrow-lifetime` |
+| `KVO006` | `delete-of-borrowed-value` |
+| `KVO007` | `defer-inside-loop` |
+| `KVO008` | `automatic-cleanup-not-proven` |
 
 ## Packages
 

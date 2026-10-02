@@ -128,6 +128,7 @@ format_compile_warning :: proc(path, source: string, warning: Compile_Warning) -
         line, column = inferred_line, inferred_column
     }
     code := compile_warning_code_text(warning.code)
+    name := compile_warning_name(warning.code)
     confidence := ""
     if warning.confidence == .Conservative {
         confidence = ", conservative"
@@ -136,11 +137,12 @@ format_compile_warning :: proc(path, source: string, warning: Compile_Warning) -
     defer strings.builder_destroy(&builder)
     fmt.sbprintf(
         &builder,
-        "%s:%d:%d: warning[%s%s]: %s\n",
+        "%s:%d:%d: warning[%s/%s%s]: %s\n",
         label,
         line,
         column,
         code,
+        name,
         confidence,
         message,
     )
@@ -154,6 +156,86 @@ format_compile_warning :: proc(path, source: string, warning: Compile_Warning) -
         strings.write_string(&builder, "^\n")
     }
     return strings.clone(strings.to_string(builder))
+}
+
+compile_warning_name :: proc(code: Compile_Warning_Code) -> string {
+    switch code {
+    case .General:
+        return "general-warning"
+    case .Ownership_Discarded_Result:
+        return "discarded-owned-result"
+    case .Ownership_Unreleased_Local:
+        return "unreleased-owned-local"
+    case .Ownership_Use_After_Transfer:
+        return "use-after-ownership-transfer"
+    case .Ownership_Overwrite:
+        return "overwrite-before-cleanup"
+    case .Ownership_Borrowed_Escape:
+        return "invalid-borrow-lifetime"
+    case .Ownership_Delete_Borrowed:
+        return "delete-of-borrowed-value"
+    case .Ownership_Defer_In_Loop:
+        return "defer-inside-loop"
+    case .Ownership_Automatic_Cleanup_Skipped:
+        return "automatic-cleanup-not-proven"
+    case .Repl_Unretained_Lifecycle:
+        return "unretained-repl-result"
+    }
+    return "general-warning"
+}
+
+compile_warning_description :: proc(code: Compile_Warning_Code) -> string {
+    switch code {
+    case .General:
+        return "A compiler warning without a more specific diagnostic category."
+    case .Ownership_Discarded_Result:
+        return "An owned result is discarded without being destroyed, bound for scoped cleanup, transferred, or returned."
+    case .Ownership_Unreleased_Local:
+        return "An owned local can reach the end of its scope without cleanup or ownership transfer."
+    case .Ownership_Use_After_Transfer:
+        return "A value is used after its ownership was destroyed, returned, stored, moved, or transferred to a consuming call."
+    case .Ownership_Overwrite:
+        return "Assignment can replace a live owned value before its cleanup or ownership transfer."
+    case .Ownership_Borrowed_Escape:
+        return "A borrowed value escapes its owner or is used after the owner can no longer be live."
+    case .Ownership_Delete_Borrowed:
+        return "Cleanup is attempted on a borrowed value; clean up the owner instead or create an owned copy."
+    case .Ownership_Defer_In_Loop:
+        return "A defer inside a loop runs when the surrounding scope exits, not at the end of each iteration."
+    case .Ownership_Automatic_Cleanup_Skipped:
+        return "The compiler cannot prove that automatic cleanup is safe across all relevant ownership and control-flow paths."
+    case .Repl_Unretained_Lifecycle:
+        return "The REPL can evaluate this native result but cannot safely retain it as a persistent recent value."
+    }
+    return "A compiler warning without a more specific diagnostic category."
+}
+
+compile_warning_code_from_text :: proc(
+    text: string,
+) -> (Compile_Warning_Code, bool) {
+    switch text {
+    case "KV0000", "general-warning":
+        return .General, true
+    case "KVO001", "discarded-owned-result":
+        return .Ownership_Discarded_Result, true
+    case "KVO002", "unreleased-owned-local":
+        return .Ownership_Unreleased_Local, true
+    case "KVO003", "use-after-ownership-transfer":
+        return .Ownership_Use_After_Transfer, true
+    case "KVO004", "overwrite-before-cleanup":
+        return .Ownership_Overwrite, true
+    case "KVO005", "invalid-borrow-lifetime":
+        return .Ownership_Borrowed_Escape, true
+    case "KVO006", "delete-of-borrowed-value":
+        return .Ownership_Delete_Borrowed, true
+    case "KVO007", "defer-inside-loop":
+        return .Ownership_Defer_In_Loop, true
+    case "KVO008", "automatic-cleanup-not-proven":
+        return .Ownership_Automatic_Cleanup_Skipped, true
+    case "KVR001", "unretained-repl-result":
+        return .Repl_Unretained_Lifecycle, true
+    }
+    return .General, false
 }
 
 compile_warning_code_text :: proc(code: Compile_Warning_Code) -> string {
