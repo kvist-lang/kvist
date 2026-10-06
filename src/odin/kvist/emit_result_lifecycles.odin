@@ -114,6 +114,11 @@ result_lifecycle_call_result_count :: proc(
        form.items[0].kind != .Symbol {
         return 0, false
     }
+    if proc_ty, known := proc_value_call_type(e, form); known {
+        types, parsed := proc_type_return_types(proc_ty)
+        defer delete(types)
+        return len(types), parsed
+    }
     if _, proc_decl, ok_proc := resolve_proc_call_decl(e, form.items[0].text);
        ok_proc && proc_decl != nil && proc_decl.returns.kind == .Named {
         return len(proc_decl.returns.named), true
@@ -573,6 +578,22 @@ infer_result_lifecycle :: proc(
     ); known {
         return lifecycle, true
     }
+    if proc_ty, known := proc_value_call_type(e, form); known {
+        types, parsed := proc_type_return_types(proc_ty)
+        defer delete(types)
+        if !parsed || len(types) != result_count ||
+           !type_text_has_data_lifecycle(e, types[result_index]) {
+            // Native callback results have no ownership contract in the
+            // function type. Keep their existing explicit lifetime rules.
+            return {}, false
+        }
+        return Result_Lifecycle{
+            kind = .Owned_Managed,
+            result_type = strings.clone(types[result_index]),
+            condition = .Always,
+            condition_index = -1,
+        }, true
+    }
     if result_index == 0 &&
        (form_is_owned_alloc_call(form, .String, e) ||
         form_is_owned_alloc_call(form, .Bytes, e) ||
@@ -712,7 +733,7 @@ infer_result_lifecycle :: proc(
         return {}, false
     }
     result_type := proc_decl.returns.named[result_index].ty
-    if type_text_is_managed_value(e, result_type) {
+    if type_text_has_data_lifecycle(e, result_type) {
         return Result_Lifecycle{
             kind = .Owned_Managed,
             result_type = strings.clone(result_type),

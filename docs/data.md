@@ -508,10 +508,14 @@ The practical rules are:
 - native containers containing Data require an explicit ownership contract.
 
 Every call to a Kvist procedure returning `Data` supplies one caller-owned
-reference, including calls through `fn` parameters and local procedure aliases.
+reference, including calls through `fn` parameters, local procedure aliases,
+and procedure-valued struct fields. The same convention applies to structs
+containing Data and to each Data-bearing result of a multiple-result call.
 Returning a borrowed input retains it at the procedure boundary; returning an
 owned result transfers its reference. Callers receive ordinary automatic
-cleanup without adding another retain.
+cleanup without adding another retain, including for ignored results and when
+a separate success flag is false. Native callback results still require their
+own ownership contract.
 
 Use the native-array escape hatch only when an API requires concrete storage:
 

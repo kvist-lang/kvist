@@ -1580,6 +1580,119 @@ data_returning_overloads_follow_the_managed_calling_convention :: proc(t: ^testi
 }
 
 @(test)
+managed_callback_shapes_follow_the_public_result_convention :: proc(t: ^testing.T) {
+    source := `(package main)
+(import data "kvist:data")
+
+(defstruct Box [value: Data])
+(defstruct State [maker: (fn [] -> Data)])
+
+(defn call-box [maker: (fn [] -> Box)] -> Box
+  (maker))
+
+(defn copy-box [box: Box] -> Box
+  box)
+
+(defn use-copy [box: Box]
+  (let [copy (copy-box box)]
+    (discard copy)))
+
+(defn call-state [state: State] -> Data
+  (state.maker))
+
+(defn use-pair [maker: (fn [] -> [value: Data, ok: bool])] -> int
+  (let [[value ok] (maker)]
+    (if ok (data.count value) 0)))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "return maker()"), true)
+    testing.expect_value(t, strings.contains(output, "kvist_managed_clone_Box(maker())"), false)
+    testing.expect_value(t, strings.contains(output, "return kvist_managed_clone_Box(box)"), true)
+    testing.expect_value(t, strings.contains(output, "copy := copy_box(box)"), true)
+    testing.expect_value(t, strings.contains(output, "return state.maker()"), true)
+    testing.expect_value(t, strings.contains(output, "kvist_data_lift(state.maker())"), false)
+    testing.expect_value(t, strings.contains(output, "value, ok := maker()"), true)
+    testing.expect_value(t, strings.contains(output, "kvist_data_release(value)"), true)
+}
+
+@(test)
+nested_callback_signatures_keep_outer_parameter_and_result_types :: proc(t: ^testing.T) {
+    source := `(package main)
+(import data "kvist:data")
+
+(defn make-value [] -> Data
+  (data.from-string "owned"))
+
+(defn invoke [maker: (fn [] -> Data)] -> Data
+  (maker))
+
+(defn apply-higher-order [callback: (fn [maker: (fn [] -> Data)] -> Data)] -> Data
+  (callback make-value))
+
+(defn use [] -> Data
+  (apply-higher-order (fn [maker: (fn [] -> Data)] -> Data (maker))))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "return callback(make_value)"), true)
+    testing.expect_value(t, strings.contains(output, "proc(maker: proc() -> Data) -> Data"), true)
+    testing.expect_value(t, strings.contains(output, "kvist_data_retain(callback(make_value))"), false)
+}
+
+@(test)
+procedure_type_parts_preserve_nested_parameters_and_results :: proc(t: ^testing.T) {
+    cases := [?]struct {
+        ty, params, result: string,
+        result_count: int,
+    }{
+        {"proc()", "", "", 0},
+        {"proc(maker: proc() -> Data)", "maker: proc() -> Data", "", 0},
+        {"proc(maker: proc() -> Data, ok: bool) -> Data", "maker: proc() -> Data, ok: bool", "Data", 1},
+        {"proc() -> proc(maker: proc() -> Data) -> Data", "", "proc(maker: proc() -> Data) -> Data", 1},
+        {"proc(maker: proc() -> (value: Data, ok: bool)) -> (value: Data, next: proc() -> Data, ok: bool)", "maker: proc() -> (value: Data, ok: bool)", "(value: Data, next: proc() -> Data, ok: bool)", 3},
+    }
+    for test_case in cases {
+        params, result, ok := kvist.proc_type_parts(test_case.ty)
+        testing.expect_value(t, ok, true)
+        testing.expect_value(t, params, test_case.params)
+        testing.expect_value(t, result, test_case.result)
+        types, parsed := kvist.proc_type_return_types(test_case.ty)
+        testing.expect_value(t, parsed, true)
+        testing.expect_value(t, len(types), test_case.result_count)
+        delete(types)
+    }
+    types, parsed := kvist.proc_type_return_types(
+        "proc(maker: proc() -> Data) -> (value: Data, next: proc() -> Data, ok: bool)",
+    )
+    defer delete(types)
+    testing.expect_value(t, parsed, true)
+    testing.expect_value(t, len(types), 3)
+    if len(types) == 3 {
+        testing.expect_value(t, types[0], "Data")
+        testing.expect_value(t, types[1], "proc() -> Data")
+        testing.expect_value(t, types[2], "bool")
+    }
+    invalid_types := [?]string{"Data", "proc(maker: proc() -> Data", "proc() ->"}
+    for ty in invalid_types {
+        _, _, ok := kvist.proc_type_parts(ty)
+        testing.expect_value(t, ok, false)
+    }
+}
+
+@(test)
 compile_manages_data_in_named_returns :: proc(t: ^testing.T) {
     source := `(package main)
 

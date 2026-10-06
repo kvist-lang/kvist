@@ -295,14 +295,11 @@ bind_generic_candidate :: proc(names, types: ^[dynamic]string, candidates: []str
 }
 
 proc_type_param_types :: proc(ty: string) -> (types: [dynamic]string, ok: bool) {
-    if !strings.has_prefix(ty, "proc(") {
+    params, _, parsed := proc_type_parts(ty)
+    if !parsed {
         return types, false
     }
-    close := strings.index(ty, ")")
-    if close < len("proc(") {
-        return types, false
-    }
-    parts := split_top_level_commas(ty[len("proc("):close])
+    parts := split_top_level_commas(params)
     defer delete(parts)
     for part in parts {
         trimmed := strings.trim_space(part)
@@ -754,7 +751,7 @@ obvious_form_type :: proc(e: ^Emitter, form: CST_Form) -> (string, bool) {
             }
         }
         head_name := map_name(form.items[0].text)
-        if proc_ty, ok_proc_ty := lookup_local_type(e, head_name); ok_proc_ty && type_text_is_proc(proc_ty) {
+        if proc_ty, ok_proc_ty := proc_value_call_type(e, form); ok_proc_ty {
             if return_ty, ok_return_ty := proc_type_single_return_type(proc_ty); ok_return_ty {
                 return return_ty, true
             }
@@ -1171,6 +1168,18 @@ bind_obvious_binding_types :: proc(e: ^Emitter, binding: Binding) {
     }
     if binding.is_destructure || binding.is_result_binding {
         if binding.value.kind == .List && len(binding.value.items) > 0 && binding.value.items[0].kind == .Symbol {
+            if proc_ty, known := proc_value_call_type(e, binding.value); known {
+                types, parsed := proc_type_return_types(proc_ty)
+                defer delete(types)
+                if parsed && len(types) == len(binding.pattern) {
+                    for name, idx in binding.pattern {
+                        if name != "" {
+                            bind_local_type(e, name, types[idx])
+                        }
+                    }
+                }
+                return
+            }
             head_name := map_name(binding.value.items[0].text)
             defer delete(head_name)
             if head_name == "decode_data" && len(binding.pattern) == 3 && len(binding.value.items) >= 2 {

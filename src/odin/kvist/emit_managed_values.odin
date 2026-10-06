@@ -1018,40 +1018,10 @@ form_produces_owned_managed_value :: proc(e: ^Emitter, form: CST_Form, depth: in
             return true
         }
     }
-    call_name := map_name(form.items[0].text)
-    defer delete(call_name)
-    if proc_ty, ok_proc_ty := lookup_local_type(e, call_name);
-       ok_proc_ty && type_text_is_proc(proc_ty) {
-        // Procedure-valued parameters and local aliases follow the same
-        // caller-owned Data result convention as named Kvist procedures.
-        return_ty, ok_return_ty := proc_type_single_return_type(proc_ty)
-        return ok_return_ty && type_text_is_managed_value(e, return_ty)
-    }
     if form_infers_known_foreign_lifetime(form, .Owned, depth+1, e) {
         return true
     }
-    if _, proc_decl, ok_proc := resolve_proc_call_decl(e, form.items[0].text);
-       ok_proc && proc_decl != nil {
-        // Every Kvist procedure returning Data hands its caller one stable
-        // reference. A borrowed value in the body is retained at the return
-        // boundary, while an already-owned value is transferred. `owns_result`
-        // describes the body's provenance, not a different public calling
-        // convention.
-        return proc_decl.returns.kind == .Single &&
-               type_text_is_managed_value(e, proc_decl.returns.single_ty)
-    }
-    if overload_return_ty, ok_overload :=
-           overload_obvious_call_return_type(e, call_name, form.items[1:]);
-       ok_overload {
-        defer delete(overload_return_ty)
-        if type_text_is_managed_value(e, overload_return_ty) {
-            // Every selected Kvist overload member follows the same Data
-            // calling convention as an ordinary procedure: one stable
-            // caller-owned reference.
-            return true
-        }
-    }
-    return false
+    return call_returns_owned_data_lifecycle_type(e, form, "Data")
 }
 
 form_produces_owned_managed_type :: proc(
@@ -1080,6 +1050,9 @@ form_produces_owned_managed_type :: proc(
     }
     if depth > 8 || !type_text_has_owned_lifecycle(e, ty) {
         return false
+    }
+    if call_returns_owned_data_lifecycle_type(e, form, ty) {
+        return true
     }
     if form.kind == .Symbol {
         name := map_name(form.text)

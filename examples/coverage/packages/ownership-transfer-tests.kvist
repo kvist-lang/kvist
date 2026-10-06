@@ -662,3 +662,119 @@
         shared (data.map identity-callback-data source)]
     (t.is (data.equal? cloned '["callback" "callback"]))
     (t.is (data.equal? shared '["callback" "callback"]))))
+
+(defstruct Callback-Box [value: Data])
+(defstruct Data-Maker-State [maker: (fn [] -> Data)])
+
+(defn- make-callback-box [] -> Callback-Box
+  (Callback-Box :value (make-callback-data)))
+
+(defn- call-box-maker [maker: (fn [] -> Callback-Box)] -> Callback-Box
+  (maker))
+
+(defn- make-data-pair [] -> [value: Data, ok: bool]
+  (return (make-callback-data) true))
+
+(defn- inspect-data-pair-maker
+  [maker: (fn [] -> [value: Data, ok: bool])] -> bool
+  (let [[value ok] (maker)]
+    (and ok (= (data.string value) "callback"))))
+
+(defn- call-data-field [state: Data-Maker-State] -> Data
+  (state.maker))
+
+(defn- make-owned-entries [] -> Data
+  (let [key (data.from-string "key")
+        value (make-callback-data)
+        source (data.assoc '{} key value)]
+    (data.entries source)))
+
+(t.deftest data-struct-callback-result-has-one-owner
+  (let [box (call-box-maker make-callback-box)]
+    (t.is (= (data.string box.value) "callback"))))
+
+(t.deftest data-multi-result-callback-cleans-owned-value
+  (t.is (inspect-data-pair-maker make-data-pair)))
+
+(t.deftest data-field-callback-result-has-one-owner
+  (let [value (call-data-field (Data-Maker-State :maker make-callback-data))]
+    (t.is (= (data.string value) "callback"))))
+
+(t.deftest data-entries-retains-result-and-releases-temporary-references
+  (let [entries (make-owned-entries)
+        empty (data.entries '{})
+        nil-entries (data.entries 'nil)]
+    (t.is (data.equal? entries '[["key" "callback"]]))
+    (t.is (data.equal? empty '[]))
+    (t.is (data.equal? nil-entries '[]))))
+
+(defn- identity-callback-box [box: Callback-Box] -> Callback-Box
+  box)
+
+(defn- call-box-identity
+  [callback: (fn [box: Callback-Box] -> Callback-Box)] -> Callback-Box
+  (let [source (make-callback-box)]
+    (callback source)))
+
+(defn- inspect-box-maker [maker: (fn [] -> Callback-Box)] -> bool
+  (let [box (maker)]
+    (= (data.string box.value) "callback")))
+
+(t.deftest data-struct-callback-borrowed-body-outlives-input-owner
+  (let [box (call-box-identity identity-callback-box)]
+    (t.is (= (data.string box.value) "callback"))))
+
+(t.deftest data-struct-callback-bound-and-discarded-results-are-cleaned
+  (t.is (inspect-box-maker make-callback-box))
+  (discard (call-box-maker make-callback-box)))
+
+(defn- make-conditional-data-pair [ok: bool] -> [value: Data, success: bool]
+  (return (make-callback-data) ok))
+
+(defn- exercise-data-pair-exits
+  [maker: (fn [ok: bool] -> [value: Data, success: bool]), ok: bool] -> bool
+  (let [[_ ignored-ok] (maker ok)
+        [_ _] (maker ok)
+        [value success] (maker ok)]
+    (if (not success)
+      (return ignored-ok))
+    (= (data.string value) "callback")))
+
+(t.deftest data-multi-result-callback-cleans-ignored-and-failed-results
+  (t.is (exercise-data-pair-exits make-conditional-data-pair true))
+  (t.is (not (exercise-data-pair-exits make-conditional-data-pair false))))
+
+(defn- make-box-and-data [] -> [box: Callback-Box, value: Data, ok: bool]
+  (return (make-callback-box) (make-callback-data) true))
+
+(defn- inspect-box-and-data-maker
+  [maker: (fn [] -> [box: Callback-Box, value: Data, ok: bool])] -> bool
+  (let [[box value ok] (maker)]
+    (and ok (= (data.string box.value) (data.string value)))))
+
+(t.deftest data-multi-result-callback-cleans-struct-and-data-results
+  (t.is (inspect-box-and-data-maker make-box-and-data)))
+
+(defstruct Nested-Data-Maker-State [inner: Data-Maker-State])
+
+(defn- call-nested-data-field [state: Nested-Data-Maker-State] -> Data
+  (let [maker state.inner.maker]
+    (discard (state.inner.maker))
+    (maker)))
+
+(t.deftest data-nested-field-callback-and-alias-have-one-owner
+  (let [state (Nested-Data-Maker-State
+               :inner (Data-Maker-State :maker make-callback-data))
+        value (call-nested-data-field state)]
+    (t.is (= (data.string value) "callback"))))
+
+(defn- call-higher-order-data-maker
+  [callback: (fn [maker: (fn [] -> Data)] -> Data)] -> Data
+  (callback make-callback-data))
+
+(t.deftest data-nested-callback-signatures-compile-and-transfer-results
+  (let [named (call-higher-order-data-maker call-data-maker)
+        anonymous (call-higher-order-data-maker
+                    (fn [maker: (fn [] -> Data)] -> Data (maker)))]
+    (t.is (= (data.string named) "callback"))
+    (t.is (= (data.string anonymous) "callback"))))

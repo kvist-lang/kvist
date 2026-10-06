@@ -400,8 +400,7 @@
   (let [out (arr.empty Data (core.count value))]
     (defer (delete-owned-array! out))
     (for [index (arr.range 0 (core.count value))]
-      (let [pair: [2]Data [(key-at value index) (value-at value index)]
-            entry (vector-from-array pair[:])]
+      (let [entry: Data [(key-at value index) (value-at value index)]]
         (append-retained! (addr out) entry)))
     (freeze-items! .Vector (addr out))))
 

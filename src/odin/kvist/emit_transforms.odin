@@ -193,14 +193,6 @@ source_param_type_for_item :: proc(param_ty, source_item_ty, item_ty: string) ->
     return replaced
 }
 
-proc_type_single_return_type :: proc(ty: string) -> (string, bool) {
-    arrow := strings.index(ty, "->")
-    if arrow < 0 {
-        return "", false
-    }
-    return strings.trim_space(ty[arrow+len("->"):]), true
-}
-
 append_unique_text :: proc(values: ^[dynamic]string, value: string) {
     for existing in values^ {
         if existing == value {
@@ -245,14 +237,11 @@ proc_type_return_generic_params :: proc(proc_ty: string) -> (params: [dynamic]st
 }
 
 proc_type_param_generic_params :: proc(proc_ty: string) -> (params: [dynamic]string) {
-    if !strings.has_prefix(proc_ty, "proc(") {
+    param_types, _, parsed := proc_type_parts(proc_ty)
+    if !parsed {
         return params
     }
-    close := strings.index(proc_ty, ")")
-    if close < len("proc(") {
-        return params
-    }
-    return generic_type_params_in_text(proc_ty[len("proc("):close])
+    return generic_type_params_in_text(param_types)
 }
 
 generic_param_in_slice :: proc(values: []string, value: string) -> bool {
