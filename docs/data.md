@@ -507,6 +507,12 @@ The practical rules are:
 - ordinary bindings, assignment, arguments, and returns are compiler managed;
 - native containers containing Data require an explicit ownership contract.
 
+Every call to a Kvist procedure returning `Data` supplies one caller-owned
+reference, including calls through `fn` parameters and local procedure aliases.
+Returning a borrowed input retains it at the procedure boundary; returning an
+owned result transfers its reference. Callers receive ordinary automatic
+cleanup without adding another retain.
+
 Use the native-array escape hatch only when an API requires concrete storage:
 
 ```clojure

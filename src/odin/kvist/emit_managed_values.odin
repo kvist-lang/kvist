@@ -1018,6 +1018,15 @@ form_produces_owned_managed_value :: proc(e: ^Emitter, form: CST_Form, depth: in
             return true
         }
     }
+    call_name := map_name(form.items[0].text)
+    defer delete(call_name)
+    if proc_ty, ok_proc_ty := lookup_local_type(e, call_name);
+       ok_proc_ty && type_text_is_proc(proc_ty) {
+        // Procedure-valued parameters and local aliases follow the same
+        // caller-owned Data result convention as named Kvist procedures.
+        return_ty, ok_return_ty := proc_type_single_return_type(proc_ty)
+        return ok_return_ty && type_text_is_managed_value(e, return_ty)
+    }
     if form_infers_known_foreign_lifetime(form, .Owned, depth+1, e) {
         return true
     }
@@ -1031,10 +1040,8 @@ form_produces_owned_managed_value :: proc(e: ^Emitter, form: CST_Form, depth: in
         return proc_decl.returns.kind == .Single &&
                type_text_is_managed_value(e, proc_decl.returns.single_ty)
     }
-    overload_name := map_name(form.items[0].text)
-    defer delete(overload_name)
     if overload_return_ty, ok_overload :=
-           overload_obvious_call_return_type(e, overload_name, form.items[1:]);
+           overload_obvious_call_return_type(e, call_name, form.items[1:]);
        ok_overload {
         defer delete(overload_return_ty)
         if type_text_is_managed_value(e, overload_return_ty) {

@@ -1499,10 +1499,52 @@ compile_manages_data_returned_by_proc_value :: proc(t: ^testing.T) {
     }
     defer delete(output)
 
-    testing.expect_value(t, strings.contains(output, "updated := kvist_data_retain(f(config))"), true)
+    testing.expect_value(t, strings.contains(output, "updated := f(config)"), true)
+    testing.expect_value(t, strings.contains(output, "updated := kvist_data_retain(f(config))"), false)
     testing.expect_value(t, strings.contains(output, "defer kvist_data_release(updated)"), true)
     testing.expect_value(t, strings.contains(output, "return (proc(kvist_value: Data, kvist_owner: ^bool) -> Data"), true)
     testing.expect_value(t, strings.contains(output, "return kvist_value })(updated, &kvist_owner_"), true)
+}
+
+@(test)
+data_callback_results_follow_the_managed_calling_convention :: proc(t: ^testing.T) {
+    source := `(package main)
+
+(defn call-maker [maker: (fn [] -> Data)] -> Data
+  (maker))
+
+(defn return-callback [callback: (fn [value: Data] -> Data), value: Data] -> Data
+  (return (callback value)))
+
+(defn call-alias [maker: (fn [] -> Data)] -> Data
+  (let [alias maker]
+    (alias)))
+
+(defn count-data [value: Data] -> int
+  (count value))
+
+(defn count-made-data [maker: (fn [] -> Data)] -> int
+  (count-data (maker)))
+
+(defn discard-made-data [maker: (fn [] -> Data)]
+  (discard (maker)))`
+
+    output, err, ok := kvist.compile_source(source)
+    testing.expect_value(t, ok, true)
+    if !ok {
+        testing.expect_value(t, err.message, "")
+        return
+    }
+    defer delete(output)
+
+    testing.expect_value(t, strings.contains(output, "return maker()"), true)
+    testing.expect_value(t, strings.contains(output, "return callback(value)"), true)
+    testing.expect_value(t, strings.contains(output, "return alias()"), true)
+    testing.expect_value(t, strings.contains(output, "kvist_data_retain(maker())"), false)
+    testing.expect_value(t, strings.contains(output, "kvist_data_retain(callback(value))"), false)
+    testing.expect_value(t, strings.contains(output, "kvist_data_retain(alias())"), false)
+    testing.expect_value(t, strings.contains(output, "defer kvist_data_release(kvist_thread_"), true)
+    testing.expect_value(t, strings.contains(output, "kvist_data_release(kvist_thread_"), true)
 }
 
 @(test)

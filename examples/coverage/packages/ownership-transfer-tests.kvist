@@ -585,3 +585,80 @@
     (t.is (data.equal? empty-vec '[]))
     (t.is (data.equal? empty-list '()))
     (t.is (data.equal? empty-set '#{}))))
+
+(defn- make-callback-data [] -> Data
+  (data.from-string "callback"))
+
+(defn- identity-callback-data [value: Data] -> Data
+  value)
+
+(defn- clone-callback-data [value: Data] -> Data
+  (data.from-string (data.string value)))
+
+(defn- call-data-maker [maker: (fn [] -> Data)] -> Data
+  (maker))
+
+(defn- return-data-callback
+  [callback: (fn [value: Data] -> Data)] -> Data
+  (let [source (make-callback-data)]
+    (return (callback source))))
+
+(defn- bind-data-callback-result [maker: (fn [] -> Data)] -> Data
+  (let [alias maker
+        value (alias)]
+    value))
+
+(defn- count-callback-data [value: Data] -> int
+  (data.count value))
+
+(defn- count-data-maker-result [maker: (fn [] -> Data)] -> int
+  (count-callback-data (maker)))
+
+(defn- discard-data-maker-result [maker: (fn [] -> Data)]
+  (discard (maker)))
+
+(defn- choose-data-maker-result
+  [left: (fn [] -> Data), right: (fn [] -> Data), left?: bool] -> Data
+  (if left? (left) (right)))
+
+(defn- named-data-maker-result
+  [maker: (fn [] -> Data)] -> [value: Data, ok: bool]
+  (return (maker) true))
+
+(t.deftest data-callback-tail-return-transfers-owned-result
+  (let [value (call-data-maker make-callback-data)]
+    (t.is (= (data.string value) "callback"))))
+
+(t.deftest data-callback-explicit-return-outlives-source-owner
+  (let [value (return-data-callback identity-callback-data)]
+    (t.is (= (data.string value) "callback"))))
+
+(t.deftest data-callback-alias-and-bound-result-have-one-owner
+  (let [value (bind-data-callback-result make-callback-data)]
+    (t.is (= (data.string value) "callback"))))
+
+(t.deftest data-callback-result-passed-to-borrowing-call-is-cleaned
+  (t.is (= (count-data-maker-result make-callback-data) 8)))
+
+(t.deftest data-callback-discarded-result-is-cleaned
+  (discard-data-maker-result make-callback-data)
+  (t.is true))
+
+(t.deftest data-callback-conditional-result-has-one-owner
+  (for [left? ([2]bool [false true])]
+    (let [value (choose-data-maker-result
+                 make-callback-data make-callback-data left?)]
+      (t.is (= (data.string value) "callback")))))
+
+(t.deftest data-callback-named-return-transfers-owned-result
+  (let [[value ok] (named-data-maker-result make-callback-data)]
+    (t.is ok)
+    (t.is (= (data.string value) "callback"))))
+
+(t.deftest data-map-cleans-callback-results-from-owned-and-borrowed-bodies
+  (let [label (make-callback-data)
+        source: Data [label label]
+        cloned (data.map clone-callback-data source)
+        shared (data.map identity-callback-data source)]
+    (t.is (data.equal? cloned '["callback" "callback"]))
+    (t.is (data.equal? shared '["callback" "callback"]))))
