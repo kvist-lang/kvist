@@ -309,7 +309,7 @@
     (for [index (arr.range 0 (core.count value))]
       (arr.push! out (key-at value index)))
     (let [result (vector-from-array out[:])]
-      (delete out)
+      (delete-owned-array! out)
       result)))
 
 (defn vals
@@ -321,7 +321,7 @@
     (for [index (arr.range 0 (core.count value))]
       (arr.push! out (value-at value index)))
     (let [result (vector-from-array out[:])]
-      (delete out)
+      (delete-owned-array! out)
       result)))
 
 (defn to-owned-array
@@ -365,7 +365,7 @@
     (for [index (arr.range 0 (core.count value))]
       (arr.push! out (item-at value index)))
     (let [result (vector-from-array out[:])]
-      (delete out)
+      (delete-owned-array! out)
       result)))
 
 (defn list
@@ -377,7 +377,7 @@
     (for [index (arr.range 0 (core.count value))]
       (arr.push! out (item-at value index)))
     (let [result (list-from-array out[:])]
-      (delete out)
+      (delete-owned-array! out)
       result)))
 
 (defn set
@@ -389,7 +389,7 @@
     (for [index (arr.range 0 (core.count value))]
       (arr.push! out (item-at value index)))
     (let [result (set-from-array out[:])]
-      (delete out)
+      (delete-owned-array! out)
       result)))
 
 (defn entries

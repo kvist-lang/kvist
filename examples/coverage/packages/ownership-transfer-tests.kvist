@@ -516,3 +516,72 @@
     (let [pair (make-pair 10)
           value (take-pair-branch pair left?) :defer-with delete-text]
       (t.is (> (count value) 0)))))
+
+;; Dynamic Data nodes expose leaked references under --track-memory. Return
+;; the extracted collection so its source owners are gone before assertions.
+(defn- extract-owned-map-data
+  [keys?: bool] -> Data
+  (let [key (data.from-string "owned-key")
+        label (data.from-string "owned-value")
+        nested: Data [label]
+        source (data.assoc '{} key nested)]
+    (if keys?
+      (data.keys source)
+      (data.vals source))))
+
+(defn- convert-owned-sequential-data
+  [kind: Data-Kind] -> Data
+  (let [label (data.from-string "owned-value")
+        nested: Data [label]
+        source: Data [nested nested]]
+    (case kind
+      .Vector (data.vec source)
+      .List (data.list source)
+      (data.set source))))
+
+(t.deftest data-keys-retains-result-and-releases-temporary-references
+  (let [result (extract-owned-map-data true)]
+    (t.is (data.vector? result))
+    (t.is (data.equal? result '["owned-key"]))))
+
+(t.deftest data-vals-retains-result-and-releases-temporary-references
+  (let [result (extract-owned-map-data false)]
+    (t.is (data.vector? result))
+    (t.is (data.equal? result '[["owned-value"]]))))
+
+(t.deftest data-vec-retains-shared-items-and-releases-temporary-references
+  (let [result (convert-owned-sequential-data .Vector)]
+    (t.is (data.vector? result))
+    (t.is (data.equal? result '[["owned-value"] ["owned-value"]]))))
+
+(t.deftest data-list-retains-shared-items-and-releases-temporary-references
+  (let [result (convert-owned-sequential-data .List)]
+    (t.is (data.list? result))
+    (t.is (data.equal? result '(["owned-value"] ["owned-value"])))))
+
+(t.deftest data-set-releases-temporary-references-including-duplicates
+  (let [result (convert-owned-sequential-data .Set)]
+    (t.is (data.set? result))
+    (t.is (data.equal? result '#{["owned-value"]}))))
+
+(t.deftest data-owned-collection-conversions-handle-nil-and-empty-inputs
+  (let [nil-keys (data.keys 'nil)
+        nil-vals (data.vals 'nil)
+        nil-vec (data.vec 'nil)
+        nil-list (data.list 'nil)
+        nil-set (data.set 'nil)
+        empty-keys (data.keys '{})
+        empty-vals (data.vals '{})
+        empty-vec (data.vec '())
+        empty-list (data.list '[])
+        empty-set (data.set '#{})]
+    (t.is (data.equal? nil-keys '[]))
+    (t.is (data.equal? nil-vals '[]))
+    (t.is (data.equal? nil-vec '[]))
+    (t.is (data.equal? nil-list '()))
+    (t.is (data.equal? nil-set '#{}))
+    (t.is (data.equal? empty-keys '[]))
+    (t.is (data.equal? empty-vals '[]))
+    (t.is (data.equal? empty-vec '[]))
+    (t.is (data.equal? empty-list '()))
+    (t.is (data.equal? empty-set '#{}))))
