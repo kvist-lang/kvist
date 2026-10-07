@@ -21,6 +21,14 @@ declarations, compiler-provided Kvist package members such as `arr.push!`, and
 imported Odin package definitions such as `fmt.println`. Dot package access is
 canonical, and editor completion emits `pkg.member` candidates. For Kvist
 language forms, `M-.` jumps to the compiler implementation.
+`M-?` and `C-c g u` find usages of the symbol at point through `kvist references`
+and show a standard navigable xref list. `M-x kvist-find-usages` runs the same
+command. The search uses the project root and the unsaved current buffer,
+distinguishes shadowed local bindings, and follows imports across `.kvist`
+files. Other files are read from disk. It works without a REPL; see the
+[source reference scope and limitations](../docs/tooling.md#symbols).
+`C-c g u` uses the symbol directly; `C-u C-c g u` prompts with symbol completion.
+`M-?` follows the usual `xref-prompt-for-identifier` preference.
 Completion includes Kvist forms, current-file declarations, imported package
 members, and compiler-provided package members. When point is inside a
 qualified package prefix such as `map.` or `fmt.`, completion is limited to
@@ -199,6 +207,7 @@ frame retains its stronger meaning: abort the evaluation instead of merely
 hiding the active pause.
 
 - `M-.`: go to definition
+- `M-?` or `C-c g u`: find usages of symbol at point
 - `C-c C-.`: show docs for symbol at point
 - `C-c d`: show docs for symbol at point
 - `C-c C-e`: eval form at point inline

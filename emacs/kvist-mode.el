@@ -158,7 +158,7 @@ Use a command name on `exec-path' or an explicit executable path."
     (kvist--put-indent (car entry) (cdr entry))))
 
 (defun kvist--project-root (&optional start)
-  "Return a likely Kvist project root for START or the current buffer."
+  "Return an absolute Kvist project root for START or the current buffer."
   (let* ((path (cond
                 ((bufferp start) (or (buffer-file-name start) default-directory))
                 ((stringp start) start)
@@ -167,10 +167,13 @@ Use a command name on `exec-path' or an explicit executable path."
          (dir (if (and path (file-directory-p path))
                   path
                 (file-name-directory (expand-file-name path)))))
-    (or (locate-dominating-file dir "src/cli/kvist/main.odin")
-        (locate-dominating-file dir "docs/language.md")
-        (locate-dominating-file dir ".git")
-        dir)))
+    ;; `locate-dominating-file' abbreviates home directories to ~/..., but
+    ;; subprocess arguments such as references' --root need absolute paths.
+    (expand-file-name
+     (or (locate-dominating-file dir "src/cli/kvist/main.odin")
+         (locate-dominating-file dir "docs/language.md")
+         (locate-dominating-file dir ".git")
+         dir))))
 
 (defun kvist--file-label (source-file)
   "Return a readable project-relative label for SOURCE-FILE."
@@ -737,6 +740,16 @@ When WATCH is non-nil, include `--watch'."
 (cl-defmethod xref-backend-identifier-at-point ((_backend (eql kvist)))
   (kvist--identifier-at-point))
 
+(cl-defmethod xref-backend-identifier-completion-table ((_backend (eql kvist)))
+  "Complete identifiers from the source buffer that requested xref."
+  (let ((source-buffer (current-buffer)))
+    (completion-table-dynamic
+     (lambda (_prefix)
+       (with-current-buffer source-buffer
+         (delete-dups
+          (mapcar (lambda (symbol) (plist-get symbol :name))
+                  (kvist--editor-symbols))))))))
+
 (cl-defmethod xref-backend-definitions ((_backend (eql kvist)) identifier)
   (let* ((xref-matches (seq-filter
                         #'kvist--navigable-symbol-p
@@ -760,6 +773,77 @@ When WATCH is non-nil, include `--watch'."
           (format "%s %s" (plist-get symbol :kind) (plist-get symbol :name))
           (xref-make-file-location file line column))))
      matches)))
+
+(defun kvist--reference-column (file line byte-column)
+  "Convert a one-based UTF-8 BYTE-COLUMN in FILE at LINE to an xref column."
+  (let ((existing (find-buffer-visiting file))
+        (temporary (generate-new-buffer " *kvist-reference-source*")))
+    (unwind-protect
+        (with-current-buffer (or existing temporary)
+          (unless existing (insert-file-contents file))
+          (save-restriction
+            (widen)
+            (save-excursion
+              (goto-char (point-min))
+              (forward-line (1- line))
+              (let* ((start (point))
+                     (target (byte-to-position (+ (position-bytes start)
+                                                 (1- byte-column)))))
+                (max 0 (- (or target start) start))))))
+      (kill-buffer temporary))))
+
+(cl-defmethod xref-backend-references ((_backend (eql kvist)) identifier)
+  "Find source references to IDENTIFIER, using the unsaved buffer at point."
+  (unless buffer-file-name
+    (user-error "Kvist references requires a file-backed buffer"))
+  (save-restriction
+    (widen)
+    (let* ((source-file (expand-file-name buffer-file-name))
+           (program (kvist--executable source-file))
+           (root (kvist--project-root source-file))
+           (bounds (kvist--symbol-bounds))
+           (at-point (equal identifier (kvist--identifier-at-point)))
+           (position (and at-point bounds (car bounds)))
+           (line (and position (line-number-at-pos position)))
+           (column (and position
+                        (save-excursion
+                          (goto-char position)
+                          (1+ (- (position-bytes position)
+                                 (position-bytes (line-beginning-position)))))))
+           (temp (kvist--source-temp-file)))
+      (unwind-protect
+          (pcase-let* ((args (append (list "references" source-file identifier
+                                          "--root" root "--source" temp)
+                                    (when position
+                                      (list "--line" (number-to-string line)
+                                            "--column" (number-to-string column)))))
+                      (`(,exit-code . ,output)
+                       (kvist--call-string-in-root source-file program args)))
+            (unless (zerop exit-code)
+              (user-error "%s" (string-trim output)))
+            (let (references)
+              (dolist (row (split-string output "\n" t))
+                (when (string-match
+                       "\\`\\(.*\\):\\([0-9]+\\):\\([0-9]+\\)\t[^\t]*\t\\(.*\\)\\'" row)
+                  (let* ((reported-file (match-string 1 row))
+                         (line (string-to-number (match-string 2 row)))
+                         (byte-column (string-to-number (match-string 3 row)))
+                         (summary (match-string 4 row))
+                         (file (if (file-equal-p reported-file source-file)
+                                   source-file reported-file))
+                         ;; Compiler columns count UTF-8 bytes; xref uses chars.
+                         (column (kvist--reference-column file line byte-column)))
+                    (push (xref-make summary (xref-make-file-location file line column))
+                          references))))
+              (nreverse references)))
+        (ignore-errors (delete-file temp))))))
+
+(defun kvist-find-usages ()
+  "Show a navigable list of references to the Kvist symbol at point.
+With a prefix argument, or without a symbol at point, prompt for a symbol."
+  (interactive)
+  (let ((xref-prompt-for-identifier nil))
+    (call-interactively #'xref-find-references)))
 
 (defun kvist--completion-bounds ()
   "Return completion bounds for Kvist symbols."
@@ -1203,6 +1287,8 @@ its ordinary indent-then-complete behavior."
       (kvist--disable-idle-company-completion))))
 
 (define-key kvist-mode-map (kbd "M-.") #'xref-find-definitions)
+(define-key kvist-mode-map (kbd "M-?") #'xref-find-references)
+(define-key kvist-mode-map (kbd "C-c g u") #'kvist-find-usages)
 (define-key kvist-mode-map (kbd "TAB") #'kvist-indent-or-complete)
 (define-key kvist-mode-map (kbd "<tab>") #'kvist-indent-or-complete)
 (define-key kvist-mode-map (kbd "RET") #'newline-and-indent)

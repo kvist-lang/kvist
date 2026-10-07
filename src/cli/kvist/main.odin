@@ -40,6 +40,7 @@ print_usage :: proc() {
     fmt.println("  kvist complete <input.kvist> [prefix]")
     fmt.println("  kvist doc <input.kvist> <identifier>")
     fmt.println("  kvist xref <input.kvist> <identifier>")
+    fmt.println("  kvist references <input.kvist> <identifier> [--root dir] [--line N --column N] [--source overlay]")
     fmt.println("  kvist builtin-symbols")
     fmt.println("  kvist imported-symbols <input.kvist>")
     fmt.println("  kvist package-symbols <import-path> [alias]")
@@ -56,7 +57,7 @@ is_help_arg :: proc(text: string) -> bool {
 }
 
 is_command :: proc(text: string) -> bool {
-    return is_help_arg(text) || text == "compile" || text == "dev" || text == "build" || text == "check" || text == "frontend-check" || text == "run" || text == "test" || text == "eval" || text == "repl" || text == "nrepl" || text == "__repl-worker" || text == "expand" || text == "macroexpand" || text == "symbols" || text == "lifetimes" || text == "explain" || text == "editor-symbols" || text == "lookup" || text == "complete" || text == "doc" || text == "xref" || text == "builtin-symbols" || text == "imported-symbols" || text == "package-symbols" || text == "root" || text == "cache"
+    return is_help_arg(text) || text == "compile" || text == "dev" || text == "build" || text == "check" || text == "frontend-check" || text == "run" || text == "test" || text == "eval" || text == "repl" || text == "nrepl" || text == "__repl-worker" || text == "expand" || text == "macroexpand" || text == "symbols" || text == "lifetimes" || text == "explain" || text == "editor-symbols" || text == "lookup" || text == "complete" || text == "doc" || text == "xref" || text == "references" || text == "usages" || text == "builtin-symbols" || text == "imported-symbols" || text == "package-symbols" || text == "root" || text == "cache"
 }
 
 root_command :: proc() {
@@ -623,6 +624,8 @@ main :: proc() {
         parse_doc_command()
     case "xref":
         parse_xref_command()
+    case "references", "usages":
+        parse_references_command()
     case "builtin-symbols":
         parse_builtin_symbols_command()
     case "imported-symbols":

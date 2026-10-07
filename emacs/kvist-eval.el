@@ -384,6 +384,7 @@ application."
 (define-key kvist-eval-mode-map (kbd "C-c C-z") #'kvist-repl)
 (define-key kvist-eval-mode-map (kbd "C-c M-j") nil)
 (define-key kvist-eval-mode-map (kbd "C-c g g") #'kvist-expand-form-at-point)
+(define-key kvist-eval-mode-map (kbd "C-c g u") #'kvist-find-usages)
 (define-key kvist-eval-mode-map (kbd "C-c C-k") #'kvist-eval-buffer)
 (define-key kvist-eval-mode-map (kbd "C-c C-m") #'kvist-expand-form-at-point)
 (define-key kvist-eval-mode-map (kbd "C-c v v") #'kvist-repl-versions-at-point)

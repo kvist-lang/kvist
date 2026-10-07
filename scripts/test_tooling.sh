@@ -109,6 +109,9 @@ if ! grep -q "$(printf 'log-source.kvist:23:10\titerator\tlog-lines')" "$tmp_dir
     exit 1
 fi
 
+printf 'tooling: source references\n'
+python3 tests/integration/references/test_references.py
+
 ./kvist imported-symbols examples/collections/sequences.kvist > "$tmp_dir/imported-symbols.tsv"
 if ! grep -q "$(printf 'kvist package\tarr.map')" "$tmp_dir/imported-symbols.tsv"; then
     printf 'failed: imported-symbols output did not include arr.map\n' >&2
@@ -680,6 +683,11 @@ if ! grep -q 'examples/collections/higher-order.kvist:<eval>:1:1: not expects on
 fi
 
 if command -v emacs >/dev/null 2>&1; then
+    printf 'tooling: emacs source references\n'
+    KVIST_REFERENCE_CLI="$ROOT/kvist" emacs -Q --batch -L emacs \
+        -l tests/integration/references/kvist-references-test.el \
+        -f ert-run-tests-batch-and-exit
+
     printf 'tooling: emacs byte compile\n'
     emacs -Q --batch --eval \
         '(progn

@@ -507,3 +507,43 @@ package_symbols_command :: proc(import_path, alias: string) {
     defer delete(output)
     fmt.print(output)
 }
+
+parse_references_command :: proc() {
+    if len(os.args) < 4 {
+        print_usage()
+        exit_with_timing(2)
+    }
+    options := kvist.Reference_Options{}
+    for i := 4; i < len(os.args); i += 2 {
+        if i+1 >= len(os.args) {
+            fmt.eprintln("missing value for reference option: ", os.args[i])
+            exit_with_timing(2)
+        }
+        flag, value := os.args[i], os.args[i+1]
+        switch flag {
+        case "--root": options.root = value
+        case "--source": options.source_path = value
+        case "--line", "--column":
+            number, ok := strconv.parse_int(value)
+            if !ok || number <= 0 {
+                fmt.eprintln("reference positions must be positive integers")
+                exit_with_timing(2)
+            }
+            if flag == "--line" { options.line = number } else { options.column = number }
+        case:
+            fmt.eprintln("unknown reference option: ", flag)
+            exit_with_timing(2)
+        }
+    }
+    if (options.line == 0) != (options.column == 0) {
+        fmt.eprintln("references requires both --line and --column")
+        exit_with_timing(2)
+    }
+    output, err, ok := kvist.references_path(os.args[2], os.args[3], options)
+    if !ok {
+        fmt.eprintln(err.message)
+        exit_with_timing(1)
+    }
+    defer delete(output)
+    fmt.print(output)
+}

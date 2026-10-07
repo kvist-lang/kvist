@@ -76,6 +76,7 @@ Editor-oriented queries:
 kvist lookup file.kvist symbol
 kvist complete file.kvist prefix
 kvist xref file.kvist symbol
+kvist references file.kvist symbol
 kvist symbols file.kvist
 kvist editor-symbols file.kvist
 kvist imported-symbols file.kvist
@@ -85,6 +86,37 @@ kvist builtin-symbols
 
 Machine-oriented symbol commands print tab-separated rows with declaration
 kind, name, location, signature, documentation, and source file.
+
+`xref` finds definitions; `references` (also available as `usages`) finds source
+uses, excluding declaration sites. Each result is a tab-separated row:
+`absolute-file:line:column<TAB>symbol<TAB>source-line`. Positions are one-based;
+columns count UTF-8 bytes, as in compiler diagnostics. An unused symbol produces
+empty output with a successful exit status.
+
+The search covers `.kvist` files below the nearest Git root, or the input's
+directory outside a Git project. Use `--root DIR` to choose another search scope.
+Hidden directories, build output, generated `.packages` trees and symlinked
+directories are skipped. The input file is always included.
+
+```sh
+kvist references app/main.kvist service.fetch --root .
+kvist usages app/main.kvist value --line 12 --column 9
+```
+
+Without a position, the name is resolved in the file's top-level context.
+Supply both `--line` and `--column` to resolve a particular local binding or
+shadowed parameter. Imports, aliases, `:refer`, dot/slash qualification,
+procedure/macro parameters, `let`, result-binding conditionals, loops and compact
+native type annotations are indexed from the parser. Comments, strings,
+discarded forms and quoted data are excluded; executable unquotes are included.
+The search does not compile or execute the application.
+
+Editors can pass `--source PATH` to substitute a read-only buffer snapshot for
+the input file while retaining its real file identity and import context. Other
+files are read from disk. Unparseable unrelated files are skipped; an invalid
+input is an error. This is a source reference index, not full type inference:
+individual struct fields, enum members, custom macro-introduced bindings,
+generated macro references and raw Odin bodies are not resolved.
 
 ## Ownership Inspection
 
