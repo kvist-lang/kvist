@@ -508,14 +508,22 @@ The practical rules are:
 - native containers containing Data require an explicit ownership contract.
 
 Every call to a Kvist procedure returning `Data` supplies one caller-owned
-reference, including calls through `fn` parameters, local procedure aliases,
-and procedure-valued struct fields. The same convention applies to structs
+reference, including calls through `fn` parameters, global and local procedure
+aliases, indexed procedure values, and procedure-valued struct fields. The same convention applies to structs
 containing Data and to each Data-bearing result of a multiple-result call.
 Returning a borrowed input retains it at the procedure boundary; returning an
 owned result transfers its reference. Callers receive ordinary automatic
 cleanup without adding another retain, including for ignored results and when
 a separate success flag is false. Native callback results still require their
 own ownership contract.
+
+A borrowed Data parameter remains usable by the caller after the call, even
+when the procedure explicitly returns that parameter. Sharing its payload in
+the result does not consume the caller's reference. Generic procedures whose
+type arguments contain Data use concrete managed lifecycles for local copies,
+accumulator replacement and returns. Temporary arguments are also released
+when a result is ignored, in expression branches, and on each condition
+evaluation; boolean short-circuit evaluation is preserved.
 
 Use the native-array escape hatch only when an API requires concrete storage:
 

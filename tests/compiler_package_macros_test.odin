@@ -1303,7 +1303,7 @@ compile_source_package_macro_can_expand_to_private_defiter :: proc(t: ^testing.T
 }
 
 @(test)
-warn_discarded_third_party_macro_impl_result_from_actual_decl :: proc(t: ^testing.T) {
+automatically_clean_discarded_third_party_macro_impl_result_from_actual_decl :: proc(t: ^testing.T) {
     dir, dir_err := os.make_directory_temp("", "kvist-owned-impl-package-*", context.allocator)
     testing.expect_value(t, dir_err == nil, true)
     if dir_err != nil {
@@ -1383,10 +1383,8 @@ warn_discarded_third_party_macro_impl_result_from_actual_decl :: proc(t: ^testin
     testing.expect_value(t, strings.contains(result.output, "support__join_impl :: #force_inline proc(xs: []$T, ys: []T) -> [dynamic]T"), true)
     testing.expect_value(t, strings.contains(result.output, "#owned"), false)
     testing.expect_value(t, strings.contains(result.output, "support__join_impl(xs, ys)"), true)
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(t, result.warnings[0].message, "owned result from support.join is discarded; bind it and clean it up, or return it")
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "delete(kvist_thread_"), true)
 }
 
 @(test)

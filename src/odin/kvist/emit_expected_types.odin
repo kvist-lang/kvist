@@ -5,10 +5,85 @@ import "core:os"
 import "core:strings"
 import "core:time"
 
-emit_expr_with_owned_nested_temps :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_Error, bool) {
+// Keep temporary arguments inside the evaluation of a condition. In loops
+// this scope runs on every iteration; boolean operands remain short-circuited.
+emit_condition_expr :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_Error, bool) {
+    value, _, err, ok := emit_scoped_nested_expr(e, form, "bool")
+    return value, err, ok
+}
+
+emit_scoped_nested_expr :: proc(e: ^Emitter, form: CST_Form, expected_type: string) -> (string, bool, Compile_Error, bool) {
+    result_type := expected_type
+    if result_type == "" {
+        if inferred, known := obvious_form_type(e, form); known { result_type = inferred }
+    }
+    if result_type == "" || !form_has_nested_owned_value(form, e) {
+        value, err, ok := emit_expr_for_expected_type(e, form, expected_type)
+        return value, false, err, ok
+    }
+    captures := collect_proc_literal_captures(e, []CST_Form{form}, nil)
+    defer delete(captures)
+    capture_count := len(captures)
+    for capture in captures[:capture_count] {
+        if callback_ctx, known := lookup_callback_context(e, capture.name); known {
+            for name in callback_ctx.capture_names {
+                if ty, typed := lookup_local_type(e, name); typed {
+                    append_capture_param_unique(&captures, proc_literal_capture_param(name, ty))
+                }
+            }
+        }
+    }
+    params, args: [dynamic]string
+    defer delete(params)
+    defer delete(args)
+    for capture in captures {
+        append(&params, fmt.tprintf("%s: %s", capture.name, capture.ty))
+        append(&args, capture.name)
+    }
+    previous_builder := e.builder
+    previous_indent := e.indent
+    previous_line := e.line
+    previous_source_map := e.source_map
+    e.builder = strings.builder_make()
+    e.indent = 1
+    // The enclosing expression records the map after inserting this text.
+    // Building it must not advance the enclosing output's line counter.
+    e.source_map = nil
+    defer {
+        strings.builder_destroy(&e.builder)
+        e.builder = previous_builder
+        e.indent = previous_indent
+        e.line = previous_line
+        e.source_map = previous_source_map
+    }
+    value, err, ok := emit_expr_with_owned_nested_temps(e, form, result_type)
+    if !ok { return "", false, err, false }
+    if type_text_has_managed_lifecycle(e, result_type) &&
+       !form_produces_owned_managed_type(e, form, result_type) {
+        value = managed_clone_value_text(e, result_type, value)
+    }
+    emit_line(e, fmt.tprintf("return %s", value))
+    return fmt.aprintf("(proc(%s) -> %s {{\n%s}})(%s)",
+        strings.join(params[:], ", ", context.temp_allocator), result_type, strings.to_string(e.builder),
+        strings.join(args[:], ", ", context.temp_allocator)), true, {}, true
+}
+
+emit_expr_with_owned_nested_temps :: proc(e: ^Emitter, form: CST_Form, expected_type := "") -> (string, Compile_Error, bool) {
+    if form.kind == .List && len(form.items) > 0 &&
+       (is_symbol(form.items[0], "and") || is_symbol(form.items[0], "or")) {
+        return emit_operator_expr(e, form, expected_type)
+    }
+    // Quoted forms are data, not executable calls or native constructors.
+    if form.kind == .List && len(form.items) > 0 && is_symbol(form.items[0], "quote") {
+        return emit_expr_for_expected_type(e, form, expected_type)
+    }
+    if type_text_is_managed_value(e, expected_type) &&
+       (form.kind == .Vector || form.kind == .Brace || form.kind == .Set) {
+        return emit_expr_for_expected_type(e, form, expected_type)
+    }
     if form_is_owned_constructor_result(form) || form_is_literal_constructor_call(form, e) ||
        form_is_transform_loop_call(form) {
-        return emit_expr(e, form)
+        return emit_expr_for_expected_type(e, form, expected_type)
     }
     #partial switch form.kind {
     case .List, .Vector, .Brace, .Set:
@@ -41,6 +116,15 @@ emit_expr_with_owned_nested_temps :: proc(e: ^Emitter, form: CST_Form) -> (strin
         if start > len(rewritten.items) {
             start = len(rewritten.items)
         }
+        contextual_operator := false
+        if rewritten.kind == .List && len(rewritten.items) > 0 && rewritten.items[0].kind == .Symbol {
+            op := rewritten.items[0].text
+            if canonical, _, _, known := resolve_kvist_head(e, op); known { op = canonical }
+            switch op {
+            case "=", "!=", "<", "<=", ">", ">=", "+", "-", "*", "/", "%", "%%":
+                contextual_operator = true
+            }
+        }
 
         for idx in start ..< len(rewritten.items) {
             item := rewritten.items[idx]
@@ -61,9 +145,8 @@ emit_expr_with_owned_nested_temps :: proc(e: ^Emitter, form: CST_Form) -> (strin
                 // leave it inline so Odin can provide that context.
                 item_is_owned_native =
                     (has_expected_type && type_text_is_owned_result(expected_type)) ||
-                    (!has_expected_type &&
-                     !(rewritten.kind == .List &&
-                       len(rewritten.items) > 0 &&
+                    (!has_expected_type && !contextual_operator &&
+                     !(rewritten.kind == .List && len(rewritten.items) > 0 &&
                        rewritten.items[0].kind == .Symbol &&
                        head_is_imported_odin_call(e, rewritten.items[0].text)))
             }
@@ -86,7 +169,7 @@ emit_expr_with_owned_nested_temps :: proc(e: ^Emitter, form: CST_Form) -> (strin
             err_value: Compile_Error
             ok_value := false
             if has_expected_type && type_text_is_managed_value(e, expected_type) {
-                value, err_value, ok_value = emit_expr_for_expected_type(e, item, expected_type)
+                value, err_value, ok_value = emit_expr_with_owned_nested_temps(e, item, expected_type)
             } else {
                 value, err_value, ok_value = emit_expr_with_owned_nested_temps(e, item)
             }
@@ -111,10 +194,10 @@ emit_expr_with_owned_nested_temps :: proc(e: ^Emitter, form: CST_Form) -> (strin
             rewritten.items[idx] = macro_symbol(temp, item.span)
         }
 
-        return emit_expr(e, rewritten)
+        return emit_expr_for_expected_type(e, rewritten, expected_type)
     }
 
-    return emit_expr(e, form)
+    return emit_expr_for_expected_type(e, form, expected_type)
 }
 
 form_head_is_case :: proc(form: CST_Form) -> bool {
@@ -1086,24 +1169,24 @@ emit_if_expr :: proc(e: ^Emitter, form: CST_Form, expected_type := "") -> (strin
             }
         }
     }
-    test, err_test, ok_test := emit_expr(e, form.items[1])
+    test, err_test, ok_test := emit_condition_expr(e, form.items[1])
     if !ok_test {
         return "", err_test, false
     }
-    then_value, err_then, ok_then := emit_expr_for_expected_type(e, form.items[2], branch_expected_type)
+    then_value, then_scoped, err_then, ok_then := emit_scoped_nested_expr(e, form.items[2], branch_expected_type)
     if !ok_then {
         return "", err_then, false
     }
-    else_value, err_else, ok_else := emit_expr_for_expected_type(e, form.items[3], branch_expected_type)
+    else_value, else_scoped, err_else, ok_else := emit_scoped_nested_expr(e, form.items[3], branch_expected_type)
     if !ok_else {
         return "", err_else, false
     }
     if type_text_is_managed_value(e, branch_expected_type) {
         mark_data_type(e)
-        if !form_produces_owned_managed_type(e, form.items[2], branch_expected_type) {
+        if !then_scoped && !form_produces_owned_managed_type(e, form.items[2], branch_expected_type) {
             then_value = emit_call_text("kvist_data_retain", []string{then_value})
         }
-        if !form_produces_owned_managed_type(e, form.items[3], branch_expected_type) {
+        if !else_scoped && !form_produces_owned_managed_type(e, form.items[3], branch_expected_type) {
             else_value = emit_call_text("kvist_data_retain", []string{else_value})
         }
     }

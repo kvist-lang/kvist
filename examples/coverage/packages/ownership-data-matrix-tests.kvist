@@ -1,0 +1,193 @@
+(package tests)
+(import data "kvist:data")
+(import t "kvist:test")
+
+(defn make-value [] -> Data (data.from-string "owned"))
+(defn identity-value [value: Data] -> Data value)
+(defn clone-value [value: Data] -> Data (data.from-string (data.string value)))
+(defn invoke [callback: (fn [value: Data] -> Data), value: Data] -> Data (callback value))
+(def maker: (fn [] -> Data) make-value)
+(def inferred-maker make-value)
+(def chained-maker inferred-maker)
+(defvar mutable-maker: (fn [] -> Data) make-value)
+(defstruct Box [value: Data])
+(defstruct State [maker: (fn [] -> Data), identity: (fn [value: Data] -> Data)])
+(defstruct Nested [state: State])
+(defn identity-box [box: Box] -> Box box)
+(defn make-box [] -> Box (Box :value (make-value)))
+(defn generic-identity [value: $T] -> T value)
+(defn generic-forward [value: $T] -> T (generic-identity value))
+(defn generic-pair [value: $T] -> [out: T, ok: bool] (return value true))
+(defn generic-repeat [callback: (fn [value: $T] -> T), initial: T] -> T
+ (let [acc: T initial]
+  (for [i ([3]int [0 1 2])] (set! acc (callback acc))) acc))
+(defn keep-kv [acc: Data key: Data value: Data] -> Data acc)
+(defn replace-kv [acc: Data key: Data value: Data] -> Data (clone-value value))
+(defn keep-item [acc: Data value: Data] -> Data acc)
+(defn replace-item [acc: Data value: Data] -> Data (clone-value value))
+
+(t.deftest named-data-result-retains-borrowed-input
+ (let [source (make-value) result (identity-value source)]
+  (t.is (= (data.string source) "owned"))
+  (t.is (= (data.string result) "owned"))))
+(t.deftest named-struct-result-retains-borrowed-input
+ (let [source (make-box) result (identity-box source)]
+  (t.is (= (data.string source.value) "owned"))
+  (t.is (= (data.string result.value) "owned"))))
+(t.deftest global-callbacks-have-managed-results
+ (let [a (maker) b (inferred-maker) c (chained-maker) d (mutable-maker)]
+  (t.is (data.equal? a b)) (t.is (data.equal? c d))))
+(t.deftest inferred-local-callback-has-managed-result
+ (let [alias make-value copy alias result (copy)] (t.is (= (data.string result) "owned"))))
+(t.deftest inferred-array-callback-has-managed-result
+ (let [makers: [1](fn [] -> Data) [make-value] alias (get makers 0) result (alias)]
+  (t.is (= (data.string result) "owned"))))
+(t.deftest inferred-map-callback-has-managed-result
+ (let [makers: map [string] (fn [] -> Data) {"maker" make-value} :defer
+       alias (get makers "maker") result (alias)]
+  (t.is (= (data.string result) "owned"))))
+(t.deftest nested-data-assignment-cleans-temporary-arguments
+ (let [acc: Data 'nil state (Nested :state (State :maker make-value :identity identity-value))]
+  (set! acc (state.state.identity (state.state.maker)))
+  (t.is (= (data.string acc) "owned"))))
+(t.deftest contextual-data-assignment-retains-literal-context
+ (let [acc: Data 'nil]
+  (set! acc [(make-value) (identity-value (make-value))])
+  (t.is (data.equal? acc '["owned" "owned"]))
+  (set! acc {:key (identity-value (make-value))})
+  (t.is (data.equal? acc '{:key "owned"}))))
+(t.deftest generic-data-result-keeps-input-alive
+ (let [source (make-value) result (generic-identity source) forwarded (generic-forward source)]
+  (t.is (data.equal? source result)) (t.is (data.equal? source forwarded))))
+(t.deftest generic-struct-result-keeps-input-alive
+ (let [source (make-box) result (generic-identity source)]
+  (t.is (data.equal? source.value result.value))))
+(t.deftest generic-multiple-results-retain-and-clean-data
+ (let [source (make-value) [result ok] (generic-pair source) [_ _] (generic-pair source)]
+  (t.is ok) (t.is (data.equal? source result))))
+(t.deftest generic-callback-accumulator-cleans-replaced-data
+ (let [source (make-value) kept (generic-repeat identity-value source)
+       replaced (generic-repeat clone-value source)]
+  (t.is (data.equal? source kept)) (t.is (data.equal? source replaced))))
+
+(t.deftest data-direct-binding-cleans-temporaries
+ (let [alias identity-value result (identity-value (make-value))] (t.is (= (data.string result) "owned"))))
+
+(t.deftest data-direct-assignment-cleans-temporaries
+ (let [alias identity-value result: Data 'nil] (set! result (identity-value (make-value))) (t.is (= (data.string result) "owned"))))
+
+(t.deftest data-direct-discard-cleans-temporaries
+ (let [alias identity-value] (discard (identity-value (make-value)))))
+
+(defn matrix-return-direct [] -> Data (let [alias identity-value] (identity-value (make-value))))
+
+(t.deftest data-direct-return-cleans-temporaries
+ (let [result (matrix-return-direct)] (t.is (= (data.string result) "owned"))))
+
+(t.deftest data-alias-binding-cleans-temporaries
+ (let [alias identity-value result (alias (make-value))] (t.is (= (data.string result) "owned"))))
+
+(t.deftest data-alias-assignment-cleans-temporaries
+ (let [alias identity-value result: Data 'nil] (set! result (alias (make-value))) (t.is (= (data.string result) "owned"))))
+
+(t.deftest data-alias-discard-cleans-temporaries
+ (let [alias identity-value] (discard (alias (make-value)))))
+
+(defn matrix-return-alias [] -> Data (let [alias identity-value] (alias (make-value))))
+
+(t.deftest data-alias-return-cleans-temporaries
+ (let [result (matrix-return-alias)] (t.is (= (data.string result) "owned"))))
+
+(t.deftest data-callback-binding-cleans-temporaries
+ (let [alias identity-value result (invoke identity-value (make-value))] (t.is (= (data.string result) "owned"))))
+
+(t.deftest data-callback-assignment-cleans-temporaries
+ (let [alias identity-value result: Data 'nil] (set! result (invoke identity-value (make-value))) (t.is (= (data.string result) "owned"))))
+
+(t.deftest data-callback-discard-cleans-temporaries
+ (let [alias identity-value] (discard (invoke identity-value (make-value)))))
+
+(defn matrix-return-callback [] -> Data (let [alias identity-value] (invoke identity-value (make-value))))
+
+(t.deftest data-callback-return-cleans-temporaries
+ (let [result (matrix-return-callback)] (t.is (= (data.string result) "owned"))))
+
+(t.deftest data-generic-binding-cleans-temporaries
+ (let [alias identity-value result (generic-identity (make-value))] (t.is (= (data.string result) "owned"))))
+
+(t.deftest data-generic-assignment-cleans-temporaries
+ (let [alias identity-value result: Data 'nil] (set! result (generic-identity (make-value))) (t.is (= (data.string result) "owned"))))
+
+(t.deftest data-generic-discard-cleans-temporaries
+ (let [alias identity-value] (discard (generic-identity (make-value)))))
+
+(defn matrix-return-generic [] -> Data (let [alias identity-value] (generic-identity (make-value))))
+
+(t.deftest data-generic-return-cleans-temporaries
+ (let [result (matrix-return-generic)] (t.is (= (data.string result) "owned"))))
+
+(t.deftest reduce-keep-0-data-values-have-balanced-ownership
+ (let [source (make-value) items: Data [source source source]
+       selected (data.take 0 items)
+       result (data.reduce keep-item source selected)]
+  (t.is (data.equal? result source)) (t.is (= (data.string source) "owned"))))
+(t.deftest reduce-kv-keep-0-data-values-have-balanced-ownership
+ (let [source (make-value) keys: Data [:a :b :c] values: Data [source source source]
+       selected (data.take 0 keys) mapping (data.zipmap selected values)
+       result (data.reduce-kv keep-kv source mapping)]
+  (t.is (data.equal? result source)) (t.is (= (data.string source) "owned"))))
+
+(t.deftest reduce-replace-0-data-values-have-balanced-ownership
+ (let [source (make-value) items: Data [source source source]
+       selected (data.take 0 items)
+       result (data.reduce replace-item source selected)]
+  (t.is (data.equal? result source)) (t.is (= (data.string source) "owned"))))
+(t.deftest reduce-kv-replace-0-data-values-have-balanced-ownership
+ (let [source (make-value) keys: Data [:a :b :c] values: Data [source source source]
+       selected (data.take 0 keys) mapping (data.zipmap selected values)
+       result (data.reduce-kv replace-kv source mapping)]
+  (t.is (data.equal? result source)) (t.is (= (data.string source) "owned"))))
+
+(t.deftest reduce-keep-1-data-values-have-balanced-ownership
+ (let [source (make-value) items: Data [source source source]
+       selected (data.take 1 items)
+       result (data.reduce keep-item source selected)]
+  (t.is (data.equal? result source)) (t.is (= (data.string source) "owned"))))
+(t.deftest reduce-kv-keep-1-data-values-have-balanced-ownership
+ (let [source (make-value) keys: Data [:a :b :c] values: Data [source source source]
+       selected (data.take 1 keys) mapping (data.zipmap selected values)
+       result (data.reduce-kv keep-kv source mapping)]
+  (t.is (data.equal? result source)) (t.is (= (data.string source) "owned"))))
+
+(t.deftest reduce-replace-1-data-values-have-balanced-ownership
+ (let [source (make-value) items: Data [source source source]
+       selected (data.take 1 items)
+       result (data.reduce replace-item source selected)]
+  (t.is (data.equal? result source)) (t.is (= (data.string source) "owned"))))
+(t.deftest reduce-kv-replace-1-data-values-have-balanced-ownership
+ (let [source (make-value) keys: Data [:a :b :c] values: Data [source source source]
+       selected (data.take 1 keys) mapping (data.zipmap selected values)
+       result (data.reduce-kv replace-kv source mapping)]
+  (t.is (data.equal? result source)) (t.is (= (data.string source) "owned"))))
+
+(t.deftest reduce-keep-3-data-values-have-balanced-ownership
+ (let [source (make-value) items: Data [source source source]
+       selected (data.take 3 items)
+       result (data.reduce keep-item source selected)]
+  (t.is (data.equal? result source)) (t.is (= (data.string source) "owned"))))
+(t.deftest reduce-kv-keep-3-data-values-have-balanced-ownership
+ (let [source (make-value) keys: Data [:a :b :c] values: Data [source source source]
+       selected (data.take 3 keys) mapping (data.zipmap selected values)
+       result (data.reduce-kv keep-kv source mapping)]
+  (t.is (data.equal? result source)) (t.is (= (data.string source) "owned"))))
+
+(t.deftest reduce-replace-3-data-values-have-balanced-ownership
+ (let [source (make-value) items: Data [source source source]
+       selected (data.take 3 items)
+       result (data.reduce replace-item source selected)]
+  (t.is (data.equal? result source)) (t.is (= (data.string source) "owned"))))
+(t.deftest reduce-kv-replace-3-data-values-have-balanced-ownership
+ (let [source (make-value) keys: Data [:a :b :c] values: Data [source source source]
+       selected (data.take 3 keys) mapping (data.zipmap selected values)
+       result (data.reduce-kv replace-kv source mapping)]
+  (t.is (data.equal? result source)) (t.is (= (data.string source) "owned"))))

@@ -1,0 +1,490 @@
+(package tests)
+(import data "kvist:data")
+(import t "kvist:test")
+(defn identity-value [value: Data] -> Data value)
+(defn clone-value [value: Data] -> Data (data.from-string (data.string value)))
+(defn owned? [value: Data] -> bool (= (data.string value) "owned"))
+(defn indexed-owned? [index: int value: Data] -> bool (owned? value))
+(defn indexed-identity [index: int value: Data] -> Data value)
+(defn entry [key: Data value: Data] -> Data [key value])
+(defn entry-owned? [key: Data value: Data] -> bool (owned? value))
+(defn combine [left: Data right: Data] -> Data left)
+(defn native-key [value: Data] -> string (data.string value))
+(defn before? [left: Data right: Data] -> bool (< (data.string left) (data.string right)))
+(defn constant-key [value: Data] -> Data (data.from-string "same"))
+
+(t.deftest dynamic-data-keys-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.keys mapping)]
+  (t.is (data.equal? result '[:a :b]))))
+
+(t.deftest dynamic-data-vals-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.vals mapping)]
+  (t.is (data.equal? result '["owned" "other"]))))
+
+(t.deftest dynamic-data-entries-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.entries mapping)]
+  (t.is (data.equal? result '[[:a "owned"] [:b "other"]]))))
+
+(t.deftest dynamic-data-vec-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.vec items)]
+  (t.is (data.equal? result '["owned" "other" "owned"]))))
+
+(t.deftest dynamic-data-list-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.list items)]
+  (t.is (data.equal? result '("owned" "other" "owned")))))
+
+(t.deftest dynamic-data-set-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.set items)]
+  (t.is (data.equal? result '#{"owned" "other"}))))
+
+(t.deftest dynamic-data-get-in-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.get-in nested path)]
+  (t.is (data.equal? result '"owned"))))
+
+(t.deftest dynamic-data-assoc-in-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.assoc-in nested path other)]
+  (t.is (data.equal? result '{:inner {:a "other" :b "other"}}))))
+
+(t.deftest dynamic-data-update-in-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.update-in nested path clone-value)]
+  (t.is (data.equal? result '{:inner {:a "owned" :b "other"}}))))
+
+(t.deftest dynamic-data-update-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.update mapping :a clone-value)]
+  (t.is (data.equal? result '{:a "owned" :b "other"}))))
+
+(t.deftest dynamic-data-assoc-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.assoc mapping :c value)]
+  (t.is (data.equal? result '{:a "owned" :b "other" :c "owned"}))))
+
+(t.deftest dynamic-data-dissoc-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.dissoc mapping :a)]
+  (t.is (data.equal? result '{:b "other"}))))
+
+(t.deftest dynamic-data-dissoc-in-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.dissoc-in nested path)]
+  (t.is (data.equal? result '{:inner {:b "other"}}))))
+
+(t.deftest dynamic-data-append-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.append items other)]
+  (t.is (data.equal? result '["owned" "other" "owned" "other"]))))
+
+(t.deftest dynamic-data-conj-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.conj items other)]
+  (t.is (data.equal? result '["owned" "other" "owned" "other"]))))
+
+(t.deftest dynamic-data-merge-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.merge mapping mapping)]
+  (t.is (data.equal? result '{:a "owned" :b "other"}))))
+
+(t.deftest dynamic-data-merge-with-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.merge-with combine mapping mapping)]
+  (t.is (data.equal? result '{:a "owned" :b "other"}))))
+
+(t.deftest dynamic-data-select-keys-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.select-keys mapping [:a])]
+  (t.is (data.equal? result '{:a "owned"}))))
+
+(t.deftest dynamic-data-update-keys-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.update-keys identity-value mapping)]
+  (t.is (data.equal? result '{:a "owned" :b "other"}))))
+
+(t.deftest dynamic-data-update-vals-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.update-vals clone-value mapping)]
+  (t.is (data.equal? result '{:a "owned" :b "other"}))))
+
+(t.deftest dynamic-data-key-collisions-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.update-keys constant-key mapping)]
+  (t.is (data.equal? result '{"same" "other"}))))
+
+(t.deftest dynamic-data-zipmap-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.zipmap [:a :b :c] items)]
+  (t.is (data.equal? result '{:a "owned" :b "other" :c "owned"}))))
+
+(t.deftest dynamic-data-map-entries-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.map-entries entry mapping)]
+  (t.is (data.equal? result '{:a "owned" :b "other"}))))
+
+(t.deftest dynamic-data-filter-entries-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.filter-entries entry-owned? mapping)]
+  (t.is (data.equal? result '{:a "owned"}))))
+
+(t.deftest dynamic-data-group-by-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.group-by clone-value items)]
+  (t.is (data.equal? result '{"owned" ["owned" "owned"] "other" ["other"]}))))
+
+(t.deftest dynamic-data-index-by-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.index-by clone-value items)]
+  (t.is (data.equal? result '{"owned" "owned" "other" "other"}))))
+
+(t.deftest dynamic-data-count-by-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.count-by clone-value items)]
+  (t.is (data.equal? result '{"owned" 2 "other" 1}))))
+
+(t.deftest dynamic-data-frequencies-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.frequencies items)]
+  (t.is (data.equal? result '{"owned" 2 "other" 1}))))
+
+(t.deftest dynamic-data-into-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.into items [other])]
+  (t.is (data.equal? result '["owned" "other" "owned" "other"]))))
+
+(t.deftest dynamic-data-partition-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.partition 2 items)]
+  (t.is (data.equal? result '[["owned" "other"]]))))
+
+(t.deftest dynamic-data-partition-all-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.partition-all 2 items)]
+  (t.is (data.equal? result '[["owned" "other"] ["owned"]]))))
+
+(t.deftest dynamic-data-partition-by-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.partition-by clone-value items)]
+  (t.is (data.equal? result '[["owned"] ["other"] ["owned"]]))))
+
+(t.deftest dynamic-data-interleave-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.interleave items [other value])]
+  (t.is (data.equal? result '["owned" "other" "other" "owned"]))))
+
+(t.deftest dynamic-data-rest-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.rest items)]
+  (t.is (data.equal? result '["other" "owned"]))))
+
+(t.deftest dynamic-data-butlast-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.butlast items)]
+  (t.is (data.equal? result '["owned" "other"]))))
+
+(t.deftest dynamic-data-take-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.take 2 items)]
+  (t.is (data.equal? result '["owned" "other"]))))
+
+(t.deftest dynamic-data-drop-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.drop 1 items)]
+  (t.is (data.equal? result '["other" "owned"]))))
+
+(t.deftest dynamic-data-zero-take-nth-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.take-nth 0 items)]
+  (t.is (data.equal? result '[]))))
+
+(t.deftest dynamic-data-take-nth-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.take-nth 2 items)]
+  (t.is (data.equal? result '["owned" "owned"]))))
+
+(t.deftest dynamic-data-peek-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.peek items)]
+  (t.is (data.equal? result '"owned"))))
+
+(t.deftest dynamic-data-pop-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.pop items)]
+  (t.is (data.equal? result '["owned" "other"]))))
+
+(t.deftest dynamic-data-map-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.map clone-value items)]
+  (t.is (data.equal? result '["owned" "other" "owned"]))))
+
+(t.deftest dynamic-data-map-indexed-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.map-indexed indexed-identity items)]
+  (t.is (data.equal? result '["owned" "other" "owned"]))))
+
+(t.deftest dynamic-data-filter-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.filter owned? items)]
+  (t.is (data.equal? result '["owned" "owned"]))))
+
+(t.deftest dynamic-data-remove-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.remove owned? items)]
+  (t.is (data.equal? result '["other"]))))
+
+(t.deftest dynamic-data-keep-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.keep clone-value items)]
+  (t.is (data.equal? result '["owned" "other" "owned"]))))
+
+(t.deftest dynamic-data-keep-indexed-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.keep-indexed indexed-identity items)]
+  (t.is (data.equal? result '["owned" "other" "owned"]))))
+
+(t.deftest dynamic-data-mapcat-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.mapcat (fn [x: Data] -> Data [x x]) items)]
+  (t.is (data.equal? result '["owned" "owned" "other" "other" "owned" "owned"]))))
+
+(t.deftest dynamic-data-concat-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.concat items [other])]
+  (t.is (data.equal? result '["owned" "other" "owned" "other"]))))
+
+(t.deftest dynamic-data-reverse-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.reverse items)]
+  (t.is (data.equal? result '["owned" "other" "owned"]))))
+
+(t.deftest dynamic-data-interpose-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.interpose other items)]
+  (t.is (data.equal? result '["owned" "other" "other" "other" "owned"]))))
+
+(t.deftest dynamic-data-distinct-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.distinct items)]
+  (t.is (data.equal? result '["owned" "other"]))))
+
+(t.deftest dynamic-data-distinct-by-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.distinct-by clone-value items)]
+  (t.is (data.equal? result '["owned" "other"]))))
+
+(t.deftest dynamic-data-drop-while-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.drop-while owned? items)]
+  (t.is (data.equal? result '["other" "owned"]))))
+
+(t.deftest dynamic-data-take-while-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.take-while owned? items)]
+  (t.is (data.equal? result '["owned"]))))
+
+(t.deftest dynamic-data-sort-by-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.sort-by native-key items)]
+  (t.is (data.equal? result '["other" "owned" "owned"]))))
+
+(t.deftest dynamic-data-sort-with-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.sort-with before? items)]
+  (t.is (data.equal? result '["other" "owned" "owned"]))))
+
+(t.deftest dynamic-data-first-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.first items)]
+  (t.is (data.equal? result '"owned"))))
+
+(t.deftest dynamic-data-second-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.second items)]
+  (t.is (data.equal? result '"other"))))
+
+(t.deftest dynamic-data-last-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.last items)]
+  (t.is (data.equal? result '"owned"))))
+
+(t.deftest dynamic-data-nth-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.nth items 1)]
+  (t.is (data.equal? result '"other"))))
+
+(t.deftest dynamic-data-item-at-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.item-at items 1)]
+  (t.is (data.equal? result '"other"))))
+
+(t.deftest dynamic-data-key-at-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.key-at mapping 0)]
+  (t.is (data.equal? result ':a))))
+
+(t.deftest dynamic-data-value-at-balances-references
+ (let [value (data.from-string "owned") other (data.from-string "other")
+       items: Data [value other value] mapping: Data {:a value :b other}
+       nested: Data {:inner mapping} path: Data [:inner :a]
+       result (data.value-at mapping 0)]
+  (t.is (data.equal? result '"owned"))))
+
+(t.deftest dynamic-data-search-results-balance-references
+ (let [value (data.from-string "owned") items: Data [value value]
+       [left right] (data.split-at 1 items)
+       [found found?] (data.find owned? items)
+       [index indexed indexed?] (data.find-indexed indexed-owned? items)
+       [minimum min?] (data.min-by native-key items)
+       [maximum max?] (data.max-by native-key items)
+       [looked-up present?] (data.lookup {:key value} :key)]
+  (t.is (and found? indexed? min? max? present?))
+  (t.is (= index 0))
+  (t.is (data.equal? left right))
+  (t.is (data.equal? found indexed))
+  (t.is (data.equal? minimum maximum))
+  (t.is (data.equal? value looked-up))))
+(t.deftest captured-data-callback-results-balance-references
+ (let [capture (data.from-string "owned") items: Data [capture capture]
+       mapped (data.map (fn [item: Data] -> Data capture) items)
+       reduced (data.reduce (fn [acc: Data item: Data] -> Data capture) capture items)]
+  (t.is (data.equal? mapped '["owned" "owned"]))
+  (t.is (data.equal? reduced capture))))
+(defstruct Decoded [value: Data])
+(t.deftest data-decode-success-and-failure-balance-references
+ (let [value (data.from-string "owned") source: Data {:value value}
+       [decoded error ok] (data.decode Decoded source)
+       [failed failure bad-ok] (data.decode Decoded [value])]
+  (t.is ok) (t.is (not bad-ok))
+  (t.is (data.equal? decoded.value value))))

@@ -260,6 +260,9 @@ append_proc_generic_candidates :: proc(values: ^[dynamic]string, text: string) {
 proc_decl_generic_candidates :: proc(proc_decl: ^Proc_Decl) -> (values: [dynamic]string) {
     for param in proc_decl.params {
         append_proc_generic_candidates(&values, param.ty)
+        if param.ty == "typeid" && strings.has_prefix(param.name, "$") {
+            append_unique_text(&values, param.name[1:])
+        }
     }
     #partial switch proc_decl.returns.kind {
     case .Single:
@@ -443,17 +446,64 @@ proc_decl_call_type_bindings :: proc(e: ^Emitter, proc_decl: ^Proc_Decl, args: [
         return names, types, true
     }
 
-    for param, idx in proc_decl.params {
-        if idx >= len(args) {
-            break
+    actuals := make([]CST_Form, len(proc_decl.params))
+    provided := make([]bool, len(proc_decl.params))
+    defer delete(actuals)
+    defer delete(provided)
+    resolution := keyword_args_call_resolution(e, proc_decl, args)
+    positional_count := len(args)
+    if resolution.mode == .Named { positional_count = resolution.split }
+    for idx in 0..<min(positional_count, len(actuals)) {
+        actuals[idx] = args[idx]
+        provided[idx] = true
+    }
+    if resolution.mode == .Named {
+        for idx := resolution.split; idx+1 < len(args); idx += 2 {
+            name, known := brace_key_name(args[idx])
+            if !known { continue }
+            for param, param_idx in proc_decl.params {
+                if param.name == name {
+                    actuals[param_idx] = args[idx+1]
+                    provided[param_idx] = true
+                    break
+                }
+            }
         }
-        if !bind_proc_callback_generic_candidates(e, &names, &types, candidates[:], param.ty, args[idx]) {
-            return names, types, false
-        }
-        if actual_ty, ok_actual_ty := obvious_form_type(e, args[idx]); ok_actual_ty {
-            if !bind_generic_candidates_from_types(&names, &types, candidates[:], param.ty, actual_ty) {
+    }
+    // Infer callback input types from the data arguments first. A mismatched
+    // callback must be checked against that signature, not erase it through
+    // a conflicting inference and leave the call unchecked.
+    for callback_pass in 0..<2 {
+        for param, idx in proc_decl.params {
+            if !provided[idx] || type_text_is_proc(param.ty) != (callback_pass == 1) { continue }
+            if param.ty == "typeid" && strings.has_prefix(param.name, "$") {
+                if actual_ty, _, known := parse_type_text(actuals[idx]); known {
+                    if !bind_generic_candidate(&names, &types, candidates[:], param.name, actual_ty) {
+                        delete(actual_ty)
+                        return names, types, false
+                    }
+                    // Type bindings borrow from the compile arena, like the
+                    // inferred types returned by obvious_form_type.
+                }
+                continue
+            }
+            remaining: [dynamic]string
+            for candidate in candidates {
+                if callback_pass == 0 || !generic_param_in_slice(names[:], candidate) {
+                    append(&remaining, candidate)
+                }
+            }
+            if callback_pass == 1 && !bind_proc_callback_generic_candidates(e, &names, &types, remaining[:], param.ty, actuals[idx]) {
+                delete(remaining)
                 return names, types, false
             }
+            if actual_ty, ok_actual_ty := obvious_form_type(e, actuals[idx]); ok_actual_ty {
+                if !bind_generic_candidates_from_types(&names, &types, remaining[:], param.ty, actual_ty) {
+                    delete(remaining)
+                    return names, types, false
+                }
+            }
+            delete(remaining)
         }
     }
 
@@ -594,6 +644,9 @@ obvious_form_type :: proc(e: ^Emitter, form: CST_Form) -> (string, bool) {
             return ty, true
         }
         name := map_name(form.text)
+        if ty, known := procedure_symbol_value_type(e, name); known {
+            return ty, true
+        }
         for result_ty, result_idx in e.repl_recent_result_types {
             if name == fmt.tprintf("kvist_repl_star_%d", result_idx+1) {
                 return result_ty, true
@@ -780,6 +833,11 @@ obvious_form_type :: proc(e: ^Emitter, form: CST_Form) -> (string, bool) {
         if head_name == "odin_get" && len(form.items) >= 3 {
             if source_ty, ok_source_ty := obvious_form_type(e, form.items[1]); ok_source_ty && source_ty == "Data" {
                 return "Data", true
+            } else if ok_source_ty {
+                if _, value_ty, is_map := map_type_parts(source_ty); is_map {
+                    return value_ty, true
+                }
+                return collection_element_type(source_ty)
             }
         }
         if form.items[0].text == "into" && len(form.items) >= 4 {
@@ -1219,6 +1277,9 @@ bind_obvious_binding_types :: proc(e: ^Emitter, binding: Binding) {
                 }
             }
             if proc_decl, ok := find_proc_decl(e, head_name); ok && proc_decl.returns.kind == .Named && len(proc_decl.returns.named) == len(binding.pattern) {
+                if concrete, specialized := managed_proc_specialization_for_args(e, proc_decl, binding.value.items[1:]); specialized {
+                    proc_decl = concrete
+                }
                 for name, idx in binding.pattern {
                     if name != "" {
                         bind_local_type(e, name, proc_decl.returns.named[idx].ty)

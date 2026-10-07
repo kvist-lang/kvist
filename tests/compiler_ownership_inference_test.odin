@@ -1131,7 +1131,7 @@ compile_warns_for_use_after_named_ownership_transfer :: proc(t: ^testing.T) {
 }
 
 @(test)
-compile_warns_for_managed_local_used_after_struct_store :: proc(t: ^testing.T) {
+compile_allows_managed_local_reuse_after_struct_store :: proc(t: ^testing.T) {
     source := `(package main)
 
 (defstruct Box [
@@ -1154,24 +1154,8 @@ compile_warns_for_managed_local_used_after_struct_store :: proc(t: ^testing.T) {
     defer kvist.source_map_slice_delete(result.source_map)
     defer kvist.compile_warning_slice_delete(result.warnings)
 
-    testing.expect_value(t, len(result.warnings), 1)
-    if len(result.warnings) == 1 {
-        testing.expect_value(
-            t,
-            result.warnings[0].code,
-            kvist.Compile_Warning_Code.Ownership_Use_After_Transfer,
-        )
-        testing.expect_value(
-            t,
-            result.warnings[0].confidence,
-            kvist.Compile_Warning_Confidence.Definite,
-        )
-        testing.expect_value(
-            t,
-            result.warnings[0].message,
-            "owned local value is used after ownership transfer",
-        )
-    }
+    testing.expect_value(t, len(result.warnings), 0)
+    testing.expect_value(t, strings.contains(result.output, "})(&value, &kvist_owner_"), true)
 }
 
 @(test)

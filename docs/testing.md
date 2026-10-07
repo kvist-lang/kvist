@@ -327,10 +327,20 @@ KVO004. Run only these fast frontend checks with:
 ```
 
 Property suites are intentionally run locally rather than in CI. The
-deterministic CI suite executes
-`examples/coverage/packages/ownership-transfer-tests.kvist` with memory
-tracking and the ownership audit so generated-code cleanup is still checked at
-runtime on every push to `main` and every pull request.
+deterministic CI suite executes four ownership runtime suites with
+`--track-memory --ownership-audit`:
+
+- `ownership-transfer-tests.kvist`: native ownership, control flow and managed callbacks.
+- `ownership-data-matrix-tests.kvist`: Data and struct returns, procedure aliases,
+  generic accumulators, assignment and ignored results.
+- `ownership-data-api-tests.kvist`: dynamic payloads through Data collection APIs,
+  captured callbacks and decoding.
+- `ownership-data-edge-tests.kvist`: keyword/default/type arguments, short-circuit
+  conditions, loop iterations, early returns and partial decoding failures.
+
+These files are in `examples/coverage/packages`. Memory tracking requires every
+test to finish with no outstanding allocations and no invalid frees. CI runs
+when the workflow is dispatched.
 
 ## Examples
 

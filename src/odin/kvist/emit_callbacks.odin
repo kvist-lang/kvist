@@ -1375,7 +1375,7 @@ emit_operator_expr :: proc(
             return "", Compile_Error{message = "not expects one argument", span = form.span}, false
         }
         value, err_value, ok_value :=
-            emit_expr_for_expected_type(e, form.items[1], "bool")
+            emit_condition_expr(e, form.items[1])
         if !ok_value {
             return "", err_value, false
         }
@@ -1397,7 +1397,7 @@ emit_operator_expr :: proc(
                 strings.write_string(&builder, joiner)
             }
             value, err_value, ok_value :=
-                emit_expr_for_expected_type(e, arg, "bool")
+                emit_condition_expr(e, arg)
             if !ok_value {
                 return "", err_value, false
             }

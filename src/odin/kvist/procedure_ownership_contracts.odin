@@ -61,6 +61,9 @@ procedure_ownership_contract :: proc(
         }
         explicit_consumption :=
             body_deletes_or_returns_name(e, decl.body[:], param.name, false)
+        if type_text_has_data_lifecycle(e, param.ty) {
+            explicit_consumption = body_consumes_data_parameter(e, decl.body[:], param.name)
+        }
         transferred_result :=
             !type_text_has_managed_lifecycle(e, param.ty) &&
             contract.result_flow == .Owned &&

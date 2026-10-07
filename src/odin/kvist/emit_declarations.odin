@@ -503,6 +503,9 @@ emit_decl :: proc(e: ^Emitter, decl: IR_Decl) -> (Compile_Error, bool) {
 }
 
 emit_captured_proc_specialization :: proc(e: ^Emitter, spec: Captured_Proc_Specialization) -> (Compile_Error, bool) {
+    if spec.managed_decl != nil {
+        return emit_decl(e, IR_Decl{kind = .Proc, proc_decl = spec.managed_decl^})
+    }
     proc_decl, ok_proc := find_proc_decl(e, spec.original_name)
     if !ok_proc {
         return Compile_Error{message = fmt.tprintf("internal error: missing proc for callback specialization %s", spec.original_name)}, false

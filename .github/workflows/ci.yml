@@ -53,7 +53,11 @@ jobs:
       - name: Test ownership runtime invariants
         if: runner.os != 'Windows'
         shell: bash
-        run: ./kvist test examples/coverage/packages/ownership-transfer-tests.kvist --track-memory --ownership-audit
+        run: |
+          ./kvist test examples/coverage/packages/ownership-transfer-tests.kvist --track-memory --ownership-audit
+          ./kvist test examples/coverage/packages/ownership-data-matrix-tests.kvist --track-memory --ownership-audit
+          ./kvist test examples/coverage/packages/ownership-data-api-tests.kvist --track-memory --ownership-audit
+          ./kvist test examples/coverage/packages/ownership-data-edge-tests.kvist --track-memory --ownership-audit
 
       - name: Smoke test CLI
         shell: bash

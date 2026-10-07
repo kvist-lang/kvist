@@ -41,6 +41,7 @@ emit_selected_decls_with_source_map :: proc(
         merge_emitter_features(&features, initial_features^)
     }
     captured_specializations: [dynamic]Captured_Proc_Specialization
+    defer delete_managed_proc_specializations(&captured_specializations)
     e := Emitter{
         builder  = strings.builder_make(),
         decls    = analysis_decls,
@@ -252,6 +253,7 @@ emit_eval_decls_with_source_map :: proc(
     emitter_import_cache_init(&import_cache)
     defer emitter_import_cache_delete(&import_cache)
     captured_specializations: [dynamic]Captured_Proc_Specialization
+    defer delete_managed_proc_specializations(&captured_specializations)
     all_repl_value_names: [dynamic]string
     append(&all_repl_value_names, ..repl_value_names)
     all_repl_var_names: [dynamic]string

@@ -2579,6 +2579,9 @@ ownership_ir_lower_call :: proc(
     }
     called_contract := Procedure_Ownership_Contract{}
     if ok_called_proc && called_proc != nil {
+        if concrete, specialized := managed_proc_specialization_for_args(lowering.emitter, called_proc, form.items[1:]); specialized {
+            called_proc = concrete
+        }
         called_contract = procedure_ownership_contract(
             called_proc,
             lowering.emitter,
@@ -2688,10 +2691,10 @@ ownership_ir_lower_call :: proc(
                             break
                         }
                     }
-                    owns_field = owns_field || ownership_type_has_destructor(
+                    owns_field = owns_field || (ownership_type_has_destructor(
                         lowering.emitter,
                         field_ty,
-                    )
+                    ) && !type_text_has_data_lifecycle(lowering.emitter, field_ty))
                     if owns_field && !cleanup_scheduled {
                         event_kind = .Store
                     }
@@ -2936,10 +2939,10 @@ ownership_ir_lower_call :: proc(
                         break
                     }
                 }
-                owns_field = owns_field || ownership_type_has_destructor(
+                owns_field = owns_field || (ownership_type_has_destructor(
                     lowering.emitter,
                     field_ty,
-                )
+                ) && !type_text_has_data_lifecycle(lowering.emitter, field_ty))
                 if owns_field && !cleanup_scheduled {
                     event_kind = .Store
                 }
@@ -3591,6 +3594,8 @@ ownership_ir_lower_form :: proc(
             return ownership_ir_flow_single(block)
         }
         defer delete(bindings)
+        push_local_type_scope(lowering.emitter)
+        defer pop_local_type_scope(lowering.emitter)
         name_start := len(lowering.names)
         borrow_start := len(lowering.borrows)
         owner_group_binding_start := len(lowering.active_owner_group_bindings)
@@ -3607,6 +3612,7 @@ ownership_ir_lower_form :: proc(
                 binding_block,
                 &scope_places,
             )
+            bind_obvious_binding_types(lowering.emitter, binding)
         }
         body_flow := ownership_ir_lower_forms(
             lowering,

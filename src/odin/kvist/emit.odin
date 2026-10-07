@@ -611,6 +611,10 @@ emit_call_like :: proc(e: ^Emitter, form: CST_Form) -> (string, Compile_Error, b
     head_name := map_name(head.text)
     if !strings.contains(head_name, ".") || first_keyword_arg_tail_start(form.items[1:]) >= 0 {
         if call_name, proc_decl, ok_proc := resolve_proc_call_decl(e, head.text); ok_proc {
+            if concrete, specialized := managed_proc_specialization_for_args(e, proc_decl, form.items[1:]); specialized {
+                proc_decl = concrete
+                call_name = concrete.name
+            }
             call_args := form.items[1:]
             resolution := keyword_args_call_resolution(e, proc_decl, call_args)
             if resolution.mode == .Named {

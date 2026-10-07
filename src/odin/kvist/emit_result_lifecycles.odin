@@ -732,6 +732,9 @@ infer_result_lifecycle :: proc(
        len(proc_decl.returns.named) != result_count {
         return {}, false
     }
+    if concrete, specialized := managed_proc_specialization_for_args(e, proc_decl, form.items[1:]); specialized {
+        proc_decl = concrete
+    }
     result_type := proc_decl.returns.named[result_index].ty
     if type_text_has_data_lifecycle(e, result_type) {
         return Result_Lifecycle{

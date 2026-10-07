@@ -1,0 +1,105 @@
+(package tests)
+(import data "kvist:data")
+(import t "kvist:test")
+
+(defn make-value [] -> Data (data.from-string "owned"))
+(defn owned? [value: Data] -> bool (= (data.string value) "owned"))
+(defn identity-value [value: Data] -> Data (return value))
+(defn generic [value: $T, count: int :default 1] -> T
+ (let [out: T value remaining count]
+  (while (> remaining 0) (dec! remaining))
+  (return out)))
+(defn generic-early [value: $T, early?: bool] -> T
+ (let [out: T value] (if early? (return out)) out))
+(defn generic-quoted [value: $T] -> Data 'T)
+(defn render-data [value: Data] -> Data `[T ~value])
+(defn generic-tuple [left: $T, right: T] -> [a: T, b: T]
+ (return left right))
+(defstruct Box [value: Data])
+(defstruct Pair [a: Data, b: Data])
+(defstruct Validated [first: Data, count: int])
+(def inferred-literal (fn [] -> Data (make-value)))
+(defvar mutable-literal (fn [] -> Data (make-value)))
+
+(t.deftest explicit-return-keeps-source-reference
+ (let [source (make-value) result (identity-value source)]
+  (t.is (data.equal? source result))))
+(t.deftest generic-keyword-argument
+ (let [source (make-value) result (generic :value source :count 2)]
+  (t.is (data.equal? source result))))
+(t.deftest generic-default-argument
+ (let [source (make-value) result (generic source)]
+  (t.is (data.equal? source result))))
+(t.deftest generic-early-and-final-return
+ (let [source (make-value) early (generic-early source true) late (generic-early source false)]
+  (t.is (data.equal? source early)) (t.is (data.equal? source late))))
+(t.deftest generic-quotes-preserve-symbols
+ (let [source (make-value) quoted (generic-quoted source) quasiquoted (render-data source)]
+  (t.is (data.equal? quoted 'T))
+  (t.is (data.equal? quasiquoted '[T "owned"]))))
+(t.deftest generic-multiple-struct-results
+ (let [source (Box :value (make-value)) [a b] (generic-tuple source source)]
+  (t.is (data.equal? a.value source.value)) (t.is (data.equal? b.value source.value))))
+(t.deftest global-inferred-function-literals
+ (let [a (inferred-literal) b (mutable-literal)] (t.is (data.equal? a b))))
+(t.deftest loop-condition-temporaries
+ (let [iterations 0]
+  (while (and (< iterations 4) (owned? (make-value))) (inc! iterations))
+  (t.is (= iterations 4))))
+(t.deftest boolean-operands-short-circuit
+ (let [calls 0 counter (addr calls)
+       a (and false (do (inc! counter^) (owned? (make-value))))
+       b (or true (do (inc! counter^) (owned? (make-value))))]
+  (t.is (not a)) (t.is b) (t.is (= calls 0))))
+(t.deftest conditional-temporaries
+ (let [value (if (owned? (make-value)) (make-value) (make-value))]
+  (t.is (owned? value))))
+(t.deftest callback-condition-captures
+ (let [capture (make-value) items: Data [capture capture]
+       result (data.take-while (fn [item: Data] -> bool (data.equal? item capture)) items)]
+  (t.is (data.equal? result items))))
+(t.deftest data-array-iteration-generic
+ (let [source (make-value) values: [2]Data [source source]]
+  (for [value values]
+   (let [result (generic value)] (t.is (data.equal? result source))))))
+(t.deftest assignment-to-data-struct-field
+ (let [source (make-value) pair (Pair :a source :b source)]
+  (set! pair.a (identity-value (make-value)))
+  (t.is (data.equal? pair.a pair.b))))
+(t.deftest nested-decode-partial-failure
+ (let [value (make-value) source: Data {:first value :count value}
+       [decoded error ok] (data.decode Validated source)]
+  (t.is (not ok)) (t.is (data.equal? error.path '[:count]))))
+
+(defn native-join [left: []$T, right: []T] -> [dynamic]T
+ (let [out (make [dynamic]T 0 (+ (count left) (count right)))]
+  (for [item left] (append (addr out) item))
+  (for [item right] (append (addr out) item)) out))
+(t.deftest discarded-generic-native-result
+ (let [left ([]int [1 2]) right ([]int [3 4])]
+  (native-join left right)
+  (t.is (= (count left) 2))))
+(defn raw-lift [source: string] -> Data (odin-call "kvist_data_lift_string" source))
+(defn raw-rest [source: Data] -> Data (odin-call "kvist_data_rest_from" source 1))
+(t.deftest runtime-constructor-contracts
+ (let [value (raw-lift "owned") source: Data [value value] result (raw-rest source)]
+  (t.is (data.equal? result '["owned"]))))
+(t.deftest conditional-branch-arguments
+ (let [a (if true (identity-value (make-value)) (identity-value (make-value)))
+       b (if false (identity-value (make-value)) (identity-value (make-value)))]
+  (t.is (data.equal? a b))))
+(t.deftest conditional-branch-short-circuit
+ (let [calls 0 counter (addr calls)
+       value (if true (identity-value (make-value))
+                (do (inc! counter^) (identity-value (make-value))))]
+  (t.is (owned? value)) (t.is (= calls 0))))
+(defn typed-identity [$T: typeid, value: T] -> T
+ (let [copy: T value] copy))
+(t.deftest explicit-type-argument-data
+ (let [source (make-value) result: Data (typed-identity Data source)]
+  (t.is (data.equal? result source))))
+(defn generic-recursive [value: $T, remaining: int] -> T
+ (if (= remaining 0) value (generic-recursive value (- remaining 1))))
+(t.deftest recursive-generic-data-references
+ (let [source (make-value) result (generic-recursive source 4)]
+  (t.is (data.equal? result source))))

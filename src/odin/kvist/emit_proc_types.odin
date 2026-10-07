@@ -74,7 +74,61 @@ proc_value_call_type :: proc(e: ^Emitter, form: CST_Form) -> (string, bool) {
         return "", false
     }
     ty, known := known_form_type(e, form.items[0])
+    if known {
+        return ty, type_text_is_proc(ty)
+    }
+    // Named declarations keep their richer ownership and generic contracts.
+    // Procedure values may instead be global or inferred from an initializer.
+    if _, _, named := resolve_proc_call_decl(e, form.items[0].text); named {
+        return "", false
+    }
+    ty, known = obvious_form_type(e, form.items[0])
     return ty, known && type_text_is_proc(ty)
+}
+
+procedure_symbol_value_type :: proc(e: ^Emitter, name: string, depth: int = 0) -> (string, bool) {
+    if e == nil || depth > 16 {
+        return "", false
+    }
+    if ty, known := lookup_local_type(e, name); known {
+        return ty, type_text_is_proc(ty)
+    }
+    if _, decl, known := resolve_proc_call_decl(e, name); known && decl != nil {
+        return proc_type_with_capture_params_text(0, decl.params[:], decl.returns), true
+    }
+    ensure_emitter_indexes(e)
+    if idx, known := e.const_indices[name]; known {
+        decl := &e.decls[idx].const_decl
+        if decl.has_ty {
+            return decl.ty, type_text_is_proc(decl.ty)
+        }
+        if decl.value.kind == .Symbol {
+            mapped := map_name(decl.value.text)
+            defer delete(mapped)
+            return procedure_symbol_value_type(e, mapped, depth+1)
+        }
+        if decl.value.kind == .List && len(decl.value.items) > 0 && is_symbol(decl.value.items[0], "fn") {
+            parsed, _, valid := parse_proc_literal_form(decl.value)
+            if valid { return proc_literal_type_text(parsed), true }
+        }
+    }
+    for &decl in e.decls {
+        if decl.kind == .Var && decl.var_decl.name == name {
+            if decl.var_decl.has_ty {
+                return decl.var_decl.ty, type_text_is_proc(decl.var_decl.ty)
+            }
+            if decl.var_decl.value.kind == .Symbol {
+                mapped := map_name(decl.var_decl.value.text)
+                defer delete(mapped)
+                return procedure_symbol_value_type(e, mapped, depth+1)
+            }
+            if decl.var_decl.value.kind == .List && len(decl.var_decl.value.items) > 0 && is_symbol(decl.var_decl.value.items[0], "fn") {
+                parsed, _, valid := parse_proc_literal_form(decl.var_decl.value)
+                if valid { return proc_literal_type_text(parsed), true }
+            }
+        }
+    }
+    return "", false
 }
 
 // Data and structs containing Data normalize borrowed body values at their

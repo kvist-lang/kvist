@@ -545,6 +545,12 @@ proc_decl_transfers_param_in_result :: proc(e: ^Emitter, proc_decl: ^Proc_Decl, 
        len(proc_decl.body) == 0 {
         return false
     }
+    // Sharing a Data payload is not consumption: managed returns retain a
+    // borrowed input at the public return boundary. Explicit consuming
+    // parameters are handled separately by the caller.
+    if type_text_has_data_lifecycle(e, proc_decl.params[param_index].ty) {
+        return false
+    }
     name := map_name(proc_decl.params[param_index].name)
     defer delete(name)
     return form_transfers_owned_name(e, proc_decl.body[len(proc_decl.body)-1], name, true)
@@ -562,6 +568,9 @@ call_arg_targets_owned_param :: proc(e: ^Emitter, form: CST_Form, arg_index: int
     if !ok_proc || proc_decl == nil || arg_index-1 >= len(proc_decl.params) {
         return false
     }
+    if concrete, specialized := managed_proc_specialization_for_args(e, proc_decl, form.items[1:]); specialized {
+        proc_decl = concrete
+    }
     return proc_decl.params[arg_index-1].ownership == .Owned
 }
 
@@ -577,9 +586,16 @@ call_arg_transfers_owned_result :: proc(e: ^Emitter, form: CST_Form, arg_index: 
     defer delete(name)
     proc_decl, ok := find_proc_decl(e, name)
     if ok {
+        if concrete, specialized := managed_proc_specialization_for_args(e, proc_decl, form.items[1:]); specialized {
+            proc_decl = concrete
+        }
         if arg_index-1 < len(proc_decl.params) &&
            proc_decl.params[arg_index-1].ownership == .Owned {
             return true
+        }
+        if arg_ty, known := obvious_form_type(e, form.items[arg_index]);
+           known && type_text_has_data_lifecycle(e, arg_ty) {
+            return false
         }
         return proc_decl_transfers_param_in_result(e, proc_decl, arg_index-1)
     }
@@ -596,7 +612,16 @@ call_arg_transfers_owned_result :: proc(e: ^Emitter, form: CST_Form, arg_index: 
            param_index >= len(member_decl.params) {
             continue
         }
+        if concrete, specialized := managed_proc_specialization_for_args(e, member_decl, form.items[1:]); specialized {
+            member_decl = concrete
+        }
         applicable += 1
+        if member_decl.params[param_index].ownership != .Owned {
+            if arg_ty, known := obvious_form_type(e, form.items[arg_index]);
+               known && type_text_has_data_lifecycle(e, arg_ty) {
+                return false
+            }
+        }
         if member_decl.params[param_index].ownership != .Owned &&
            !proc_decl_transfers_param_in_result(e, member_decl, param_index) {
             return false
@@ -772,6 +797,40 @@ body_deletes_or_returns_name :: proc(e: ^Emitter, forms: []CST_Form, name: strin
         if form_transfers_owned_name(e, form, name, can_transfer_final && idx == len(forms)-1) {
             return true
         }
+    }
+    return false
+}
+
+// Data aliases and returns acquire independent references. Only destruction
+// or an actually consuming call transfers a borrowed managed parameter.
+body_consumes_data_parameter :: proc(e: ^Emitter, forms: []CST_Form, name: string) -> bool {
+    for form in forms {
+        if form.kind != .List || len(form.items) == 0 { continue }
+        head, known := form_head_symbol_text(form)
+        if !known || head == "quote" || head == "quasiquote" || head == "fn" { continue }
+        if form_is_delete_of_name(form, name) { return true }
+        if head == "let" && len(form.items) >= 3 {
+            bindings, _, parsed := parse_let_bindings(form.items[1])
+            if !parsed { continue }
+            shadowed := false
+            for binding in bindings {
+                if body_consumes_data_parameter(e, []CST_Form{binding.value}, name) {
+                    delete(bindings)
+                    return true
+                }
+                if binding_declares_mapped_name(binding, name) { shadowed = true; break }
+            }
+            delete(bindings)
+            if !shadowed && body_consumes_data_parameter(e, form.items[2:], name) { return true }
+            continue
+        }
+        for item, idx in form.items[1:] {
+            if item.kind == .Symbol && map_name(item.text) == name &&
+               call_arg_targets_owned_param(e, form, idx+1) {
+                return true
+            }
+        }
+        if body_consumes_data_parameter(e, form.items[1:], name) { return true }
     }
     return false
 }
@@ -2175,6 +2234,9 @@ infer_proc_lifetime_facts :: proc(e: ^Emitter) {
                 }
                 explicit_consumption :=
                     body_deletes_or_returns_name(e, proc_decl.body[:], param.name, false)
+                if type_text_has_data_lifecycle(e, param.ty) {
+                    explicit_consumption = body_consumes_data_parameter(e, proc_decl.body[:], param.name)
+                }
                 transferred_result :=
                     !type_text_has_managed_lifecycle(e, param.ty) &&
                     proc_decl.owns_result &&

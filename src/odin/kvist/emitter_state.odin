@@ -22,6 +22,8 @@ Thread_Detach_Spec :: struct {
 }
 
 Captured_Proc_Specialization :: struct {
+    managed_decl:          ^Proc_Decl,
+    managed_key:           string,
     original_name:         string,
     callback_param_index:  int,
     capture_count:         int,

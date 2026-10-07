@@ -277,7 +277,7 @@ emit_if_like_with_prefix :: proc(
     if len(form.items) < 3 || len(form.items) > 4 {
         return Compile_Error{message = fmt.tprintf("%s expects test, then, and optional else", head), span = form.span}, false
     }
-    test, err_test, ok_test := emit_expr(e, form.items[1])
+    test, err_test, ok_test := emit_condition_expr(e, form.items[1])
     if !ok_test {
         return err_test, false
     }
@@ -285,7 +285,12 @@ emit_if_like_with_prefix :: proc(
     strings.write_string(&e.builder, prefix)
     strings.write_string(&e.builder, "if ")
     strings.write_string(&e.builder, test)
-    record_current_line_fragment_map(e, len(prefix)+len("if "), test, form.items[1].span)
+    if contains_newline(test) {
+        record_source_map(e, e.line, e.line+strings.count(test, "\n"), form.items[1].span)
+    } else {
+        record_current_line_fragment_map(e, len(prefix)+len("if "), test, form.items[1].span)
+    }
+    e.line += strings.count(test, "\n")
     strings.write_string(&e.builder, " {")
     emit_raw_newline(e)
     e.indent += 1
@@ -1130,7 +1135,7 @@ emit_stmt :: proc(
                     return err_owned, false
                 }
             }
-            expr, err_expr, ok_expr := emit_expr(e, item)
+            expr, err_expr, ok_expr := emit_expr_with_owned_nested_temps(e, item)
             if !ok_expr {
                 return err_expr, false
             }
@@ -1754,7 +1759,7 @@ emit_stmt :: proc(
            (type_text_has_owned_lifecycle(e, place_ty) ||
             is_repl_dynamic_place) {
             rhs, err_rhs, ok_rhs =
-                emit_expr_for_expected_type(e, form.items[2], place_ty)
+                emit_expr_with_owned_nested_temps(e, form.items[2], place_ty)
         } else if form_has_nested_owned_value(form.items[2], e) {
             rhs, err_rhs, ok_rhs = emit_expr_with_owned_nested_temps(e, form.items[2])
         } else {
@@ -1891,14 +1896,19 @@ emit_stmt :: proc(
         if len(form.items) < 3 {
             return Compile_Error{message = "while expects condition and body", span = form.span}, false
         }
-        cond, err_cond, ok_cond := emit_expr(e, form.items[1])
+        cond, err_cond, ok_cond := emit_condition_expr(e, form.items[1])
         if !ok_cond {
             return err_cond, false
         }
         emit_indent(e)
         strings.write_string(&e.builder, "for ")
         strings.write_string(&e.builder, cond)
-        record_current_line_fragment_map(e, len("for "), cond, form.items[1].span)
+        if contains_newline(cond) {
+            record_source_map(e, e.line, e.line+strings.count(cond, "\n"), form.items[1].span)
+        } else {
+            record_current_line_fragment_map(e, len("for "), cond, form.items[1].span)
+        }
+        e.line += strings.count(cond, "\n")
         strings.write_string(&e.builder, " {")
         emit_raw_newline(e)
         e.indent += 1
@@ -2145,13 +2155,14 @@ emit_eval_print_stmt :: proc(e: ^Emitter, form: CST_Form) -> (Compile_Error, boo
         if len(form.items) < 3 || len(form.items) > 4 {
             return Compile_Error{message = "if expects test, then, and optional else", span = form.span}, false
         }
-        test, err_test, ok_test := emit_expr(e, form.items[1])
+        test, err_test, ok_test := emit_condition_expr(e, form.items[1])
         if !ok_test {
             return err_test, false
         }
         emit_indent(e)
         strings.write_string(&e.builder, "if ")
         strings.write_string(&e.builder, test)
+        e.line += strings.count(test, "\n")
         strings.write_string(&e.builder, " {")
         emit_raw_newline(e)
         e.indent += 1

@@ -653,6 +653,13 @@ find_proc_decl :: proc(e: ^Emitter, name: string) -> (^Proc_Decl, bool) {
     if idx, found := e.proc_indices[name]; found {
         return &e.decls[idx].proc_decl, true
     }
+    if e.captured_proc_specializations != nil {
+        for spec in e.captured_proc_specializations^ {
+            if spec.managed_decl != nil && spec.managed_decl.name == name {
+                return spec.managed_decl, true
+            }
+        }
+    }
     dispatch_prefix := "kvist_repl_dispatch_"
     if strings.has_prefix(name, dispatch_prefix) {
         original_name := name[len(dispatch_prefix):]
@@ -767,6 +774,19 @@ call_arg_expected_type :: proc(e: ^Emitter, call: CST_Form, item_index: int) -> 
         return "", false
     }
     arg_index := item_index-1
+    if proc_ty, known := proc_value_call_type(e, call); known {
+        if callback_ctx, captured := lookup_callback_context(e, map_name(call.items[0].text)); captured {
+            arg_index += len(callback_ctx.capture_names)
+        }
+        params, parsed := proc_type_param_types(proc_ty)
+        defer {
+            for ty in params { delete(ty) }
+            delete(params)
+        }
+        if parsed && arg_index < len(params) {
+            return strings.clone(params[arg_index]), true
+        }
+    }
     head_name := map_name(call.items[0].text)
     defer delete(head_name)
     if (head_name == "decode_data" || head_name == "validate_data") &&
