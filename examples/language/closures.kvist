@@ -9,16 +9,16 @@
   (> x threshold))
 
 (defn fn-literal-demo [] -> bool
-  (apply-pred (fn [x: int] -> bool
-                (> x 0))
-              5))
+  (apply-pred
+    (fn [x: int] -> bool (> x 0))
+    5))
 
 (defn captured-map-demo [xs: []int] -> [dynamic]int
   (let [scale 2
         offset 10]
-    (arr.map (fn [x: int] -> int
-               (+ (* x scale) offset))
-             xs)))
+    (arr.map 
+      (fn [x: int] -> int (+ (* x scale) offset))
+      xs)))
 
 (defn apply-one [f: (fn [x: int] -> int), x: int] -> int
   (f x))
@@ -29,44 +29,44 @@
 (defn captured-user-api-demo [xs: []int] -> [dynamic]int
   (let [scale 3
         offset 1]
-    (transform-all (fn [x: int] -> int
-                     (+ (* x scale) offset))
-                   xs)))
+    (transform-all
+      (fn [x: int] -> int (+ (* x scale) offset))
+      xs)))
 
 (defn captured-direct-user-api-demo [] -> int
   (let [offset 7]
-    (apply-one (fn [x: int] -> int
-                 (+ x offset))
-               5)))
+    (apply-one
+      (fn [x: int] -> int (+ x offset))
+      5)))
 
 (defn captured-helper-family-demo [xs: []int] -> bool
   (let [offset 10
         limit 3
-        mapped (arr.map-indexed (fn [i: int, x: int] -> int
-                                  (+ x i offset))
-                                xs) :defer
-        total (arr.reduce (fn [acc: int, x: int] -> int
-                            (+ acc x offset))
-                          0
-                          xs)
-        [found found?] (arr.find (fn [x: int] -> bool
-                                   (> x limit))
-                                 xs)]
+        mapped (arr.map-indexed 
+                 (fn [i: int, x: int] -> int (+ x i offset))
+                 xs) :defer
+        total (arr.reduce
+                (fn [acc: int, x: int] -> int (+ acc x offset))
+                0
+                xs)
+        [found found?] (arr.find 
+                         (fn [x: int] -> bool (> x limit))
+                         xs)]
     (and
       (= (arr.last mapped) 17)
       (= total 50)
       found?
       (= found 4)
-      (arr.some? (fn [x: int] -> bool
-                   (> x limit))
-                 xs))))
+      (arr.some? 
+        (fn [x: int] -> bool (> x limit))
+        xs))))
 
 (defn captured-map-bang-demo [] -> [dynamic]int
   (let [offset 10
         xs [1 2 3]]
-    (arr.map! (fn [x: int] -> int
-                (+ x offset))
-              xs)
+    (arr.map!
+      (fn [x: int] -> int (+ x offset))
+      xs)
     xs))
 
 (defn main []

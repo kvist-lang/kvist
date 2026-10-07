@@ -1,11 +1,10 @@
 ;; Fused data transforms: one item flow, several outputs.
 (package main)
 
-(defstruct Order [
-  status: int
-  amount: int
-  discount: int
-])
+(defstruct Order
+  [status: int
+   amount: int
+   discount: int])
 
 (defn paid? [order: Order] -> bool
   (= order.status 2))

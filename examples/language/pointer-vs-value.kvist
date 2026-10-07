@@ -3,10 +3,9 @@
 (package main)
 (import core "kvist:core")
 
-(defstruct Score [
-  value: int
-  bonus: int
-])
+(defstruct Score
+  [value: int
+   bonus: int])
 
 (defn apply-bonus [score: Score] -> Score
   ;; By-value update: copy, mutate the local copy, return the new value.

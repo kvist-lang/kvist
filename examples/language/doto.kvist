@@ -1,11 +1,10 @@
 ;; Demonstrates doto for Odin-style mutating setup calls.
 (package main)
 
-(defstruct ServerConfig [
-  port: int
-  retries: int
-  secure: bool
-])
+(defstruct ServerConfig
+  [port: int
+   retries: int
+   secure: bool])
 
 (defn set-port! [cfg: ^ServerConfig, port: int]
   (set! cfg^.port port))

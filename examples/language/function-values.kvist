@@ -3,9 +3,8 @@
 (package main)
 (import core "kvist:core")
 
-(defstruct Request [
-  path: string
-])
+(defstruct Request
+  [path: string])
 
 (defn apply-pred [pred: (fn [x: int] -> bool), x: int] -> bool
   (pred x))

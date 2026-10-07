@@ -2,9 +2,8 @@
 (package main)
 
 ;; This is a greeting
-(defstruct Greeting [
-  message: string
-])
+(defstruct Greeting
+  [message: string])
 
 (defn main []
   (let [g (Greeting  :message "hello from kvist" )]
@@ -12,7 +11,7 @@
 
 (comment
 
-  (-> (Greeting  :message "hello!" )
+  (-> (Greeting :message "hello!")
       .message
       count)
   ;; => 6

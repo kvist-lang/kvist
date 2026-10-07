@@ -48,33 +48,26 @@
     :else "positive"))
 
 (defn branch-index [first?: bool] -> int
-  (let [index (if first? 0 1)]
-    index))
+  (if first? 0 1))
 
 (defn movement-cost [method: Method] -> int
-  (let [cost (case method
-               .Get 1
-               .Head 1
-               .Post 2
-               3)]
-    cost))
+  (case method
+    .Get 1
+    .Head 1
+    .Post 2
+    3))
 
 (defn clamp-score [score: int] -> int
   (max 0 (min score 100)))
 
 (defn adjusted-score [score: int] -> int
-  (let [value: int (do
-                     (println "adjusting")
-                     (let [clamped (clamp-score score)]
-                       (+ clamped 1)))]
-    value))
+  (println "adjusting")
+  (+ (clamp-score score) 1))
 
 (defn event-score [event: Event] -> int
   (case event
     (Connected conn) conn.id
-    (Disconnected disc) (do
-                          (println disc.reason)
-                          0)
+    (Disconnected disc) (do (println disc.reason) 0)
     (Data data) (count data.payload)
     -1))
 

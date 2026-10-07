@@ -2,9 +2,8 @@
 
 (def Handle (distinct rawptr))
 
-(defstruct Counter [
-  value: int
-])
+(defstruct Counter
+  [value: int])
 
 (defn bump! [x: ^int]
   ;; For a simple pointer symbol, `x^` is the lightest read.write form.

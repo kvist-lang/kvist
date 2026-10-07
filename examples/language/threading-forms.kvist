@@ -4,20 +4,17 @@
 ;;   changes type by the end of the pipeline
 (package main)
 
-(defstruct Request [
-  content-type: keyword
-  authenticated?: bool
-  trace-id: int
-])
+(defstruct Request
+  [content-type: keyword
+   authenticated?: bool
+   trace-id: int])
 
-(defstruct Profile [
-  visits: int
-])
+(defstruct Profile
+  [visits: int])
 
-(defstruct User [
-  profile: Profile
-  age: int
-])
+(defstruct User
+  [profile: Profile
+   age: int])
 
 (defn prepare-request [req: Request, json?: bool, auth?: bool, trace?: bool] -> Request
   ;; Each true flag applies one update to the current Request. False flags leave

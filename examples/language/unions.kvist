@@ -3,10 +3,8 @@
 
 (defunion Value
   "Simple tagged value."
-  [
-  i: int
-  s: string
-])
+  [i: int
+   s: string])
 
 (defn describe [value: Value] -> string
   (case value

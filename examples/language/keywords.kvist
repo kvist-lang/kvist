@@ -1,21 +1,19 @@
 ;; Demonstrates first-class keyword values in ordinary Odin-shaped Kvist code.
 (package main)
 
-(defstruct Config [
-  mode: keyword
-  backend: keyword
-  name: string
-])
+(defstruct Config 
+  [mode: keyword
+   backend: keyword
+   name: string])
 
-(defstruct Job [
-  state: keyword
-  label: string
-])
+(defstruct Job 
+  [state: keyword
+   label: string])
 
 (defn default-config [] -> Config
   (Config :mode :env/dev
-           :backend :db/sqlite
-           :name "local"))
+          :backend :db/sqlite
+          :name "local"))
 
 (defn next-job-state [state: keyword, attempts: int] -> keyword
   (case state

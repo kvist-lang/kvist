@@ -6,16 +6,13 @@
 
 (defenum Http-Status
   "Small explicit-status enum."
-  {
-  :OK 200
-  :Not-Found 404
-})
+  {:OK 200
+   :Not-Found 404})
 
-(defstruct Endpoint [
-  path: string
-  status: Http-Status
-  tag: keyword
-])
+(defstruct Endpoint
+  [path: string
+   status: Http-Status
+   tag: keyword])
 
 (defn status-code [status: Http-Status] -> int
   (int status))

@@ -2,9 +2,8 @@
 
 (import data "kvist:data")
 
-(defstruct Person [
-  name: Data
-])
+(defstruct Person 
+  [name: Data])
 
 (defn make-person [name: Data] -> Person
   (Person :name name))

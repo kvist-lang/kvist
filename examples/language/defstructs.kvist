@@ -4,6 +4,7 @@
 (import core "kvist:core")
 (import fmt "core:fmt")
 (import set "kvist:set")
+
 (defstruct Point
   "A 2D point."
   [x: float
@@ -38,17 +39,17 @@
     (set.add! tags "math")
     (set.add! tags "lisp")
     (let [profile (Profile :name "Ada"
-                            :tags tags)]
+                           :tags tags)]
       (contains? profile.tags "math"))))
 
 (defn profile-active? [] -> bool
   (let [profile (Profile :name "Ada"
-                          :active? true)]
+                         :active? true)]
     profile.active_p))
 
 (defn profile-summary [] -> string
   (let [profile (Profile :name "Ada"
-                          :age 36)]
+                         :age 36)]
     (fmt.tprintf "%s/%d" profile.name profile.age)))
 
 (defn profile-summary-from [profile: Profile] -> string
@@ -56,7 +57,7 @@
 
 (defn promoted-name [] -> string
   (let [score (Named-Score :named (Named :name "Ada")
-                            :score 42)]
+                           :score 42)]
     score.name))
 
 (defn main []

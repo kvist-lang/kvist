@@ -29,11 +29,11 @@
         lookup (map.of string int {"one" 1 "two" 2}) :defer
         states {:state/ready 1 :state/done 2} :defer
         state (State :mode :env/dev
-                      :values [1 2 3]
-                      :fixed [5 8 13]
-                      :buffer buffer
-                      :lookup lookup
-                      :states states)]
+                     :values [1 2 3]
+                     :fixed [5 8 13]
+                     :buffer buffer
+                     :lookup lookup
+                     :states states)]
     state.mode))
 
 (defn dynamic-first [] -> int

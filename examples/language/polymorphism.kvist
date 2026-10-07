@@ -4,10 +4,9 @@
 (import fmt "core:fmt")
 (import intrinsics "base:intrinsics")
 
-(defstruct User [
-  name: string
-  age: int
-])
+(defstruct User
+  [name: string
+   age: int])
 
 (defn debug-str
   "Return an owned debug string using generic formatting."
